@@ -1,0 +1,26 @@
+[package]
+name = "simple_robot_simulator"
+version = "0.1.0"
+authors = ["Endre Erős <endree@chalmers.se>"]
+edition = "2021"
+
+[dependencies]
+r2r = "0.6.2"
+futures = "0.3.15"
+tokio = { version = "1", features = ["full"] }
+#serde = "1.0.130"
+#chrono = "0.4.19"
+tempfile = "3.3.0"
+k = "0.27.1"
+
+[[bin]]
+name = "simple_robot_simulator"
+path = "src/simple_robot_simulator.rs"
+
+[[bin]]
+name = "srs_frame_event_test"
+path = "src/srs_frame_event_test.rs"
+
+[[bin]]
+name = "srs_joint_event_test"
+path = "src/srs_joint_event_test.rs"
