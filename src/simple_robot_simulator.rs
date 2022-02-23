@@ -3,14 +3,16 @@ use k::nalgebra::Quaternion;
 use k::prelude::InverseKinematicsSolver;
 use k::{Chain, Node};
 use k::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use r2r::geometry_msgs::msg::TransformStamped;
+use r2r::geometry_msgs::msg::{Transform, TransformStamped};
 use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::std_msgs::msg::Header;
+use r2r::std_srvs::srv::SetBool;
 use r2r::tf_tools_msgs::srv::LookupTransform;
 use r2r::ActionServerGoal;
 use r2r::ParameterValue;
 use r2r::QosProfile;
+use r2r::ServiceRequest;
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -20,20 +22,35 @@ use tokio::time::{sleep, Duration};
 pub static NODE_ID: &'static str = "simple_robot_simulator";
 pub static SIM_RATE_MS: u64 = 10;
 
+// node state variables
+// 1. act_joint_state   -   the actual joint position of the robot
+// 2. ref_joint_state   -   the reference (goal) position of the robot
+// 3. ghost_joint_state -   joint state of the 'ghost' robot that will try to
+//                          always follow the pose teaching interactive marker
+//                          by calculating inverse kinematics on the fly. This
+//                          will be done if the 'teaching' mode is enabled
+// 4. ref_parameters    -   reference parameter values for the simulation
+// 5. remote_control    -   when disabled, the robot can be controlled in a
+//                          manual mode, by listening directly to the joint
+//                          state topic 'simple_joint_control'. When enabled,
+//                          the robot can only be controlled through the
+//                          dedicated action request
+// 6. teaching_mode     -   when enabled, the ghost will follow the teacher
+
 #[derive(Default)]
 pub struct Parameters {
     pub acceleration: f64,
     pub velocity: f64,
-    // pub manual_control: bool // this is when controling with the gui to save poses etc...
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // setup the node
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, NODE_ID, "")?;
 
+    // handle parameters passed on from the launch files
     let params = node.params.clone();
-
     let params_things = params.lock().unwrap(); // OK to panic
     let params_things_clone_1 = params_things.clone();
     let params_things_clone_2 = params_things.clone();
@@ -44,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let urdf_raw = params_things_clone_3.get("urdf_raw");
     let initial_joint_state = params_things_clone_4.get("initial_joint_state");
 
+    // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
     let (chain, joints, links) = match use_urdf_from_path {
         Some(p) => match p {
             ParameterValue::Bool(value) => match value {
@@ -57,12 +75,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     NODE_ID,
                                     "Parameter 'urdf_raw' has to be of type String."
                                 );
-                                panic!() // OK to panic, makes no sense to sontinue without a urdf.
+                                panic!() // OK to panic, makes no sense to continue without a urdf
                             }
                         },
                         None => {
                             r2r::log_error!(NODE_ID, "Parameter 'urdf_raw' not specified.");
-                            panic!() // OK to panic, makes no sense to sontinue without a urdf.
+                            panic!() // OK to panic, makes no sense to continue without a urdf
                         }
                     }
                 }
@@ -72,16 +90,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NODE_ID,
                     "Parameter 'use_urdf_from_path' has to be of type Bool."
                 );
-                panic!() // OK to panic, wrong type supplied.
+                panic!() // OK to panic, wrong type supplied
             }
         },
         // Assumes use_urdf_from_path == true
         None => chain_from_urdf_path(urdf_path).await,
     };
 
+    // did we get what we expected
     r2r::log_info!(NODE_ID, "Found joints: {:?}", joints);
     r2r::log_info!(NODE_ID, "Found links: {:?}", links);
 
+    // where is the robot now
     let act_joint_state = Arc::new(Mutex::new(JointState {
         header: Header {
             ..Default::default()
@@ -109,55 +129,193 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     }));
 
-    let act_joint_state_clone_1 = act_joint_state.clone();
-    let act_joint_state_clone_2 = act_joint_state.clone();
-
+    // where does the robot have to go
     let ref_joint_state = Arc::new(Mutex::new(JointState {
         header: Header {
             ..Default::default()
         },
-        name: joints,
+        name: joints.clone(),
         ..Default::default()
     }));
 
-    let ref_joint_state_clone_1 = ref_joint_state.clone();
+    // where is the ghost now, is it following the teacher or mimcking the actual robot
+    let ghost_joint_state = Arc::new(Mutex::new(JointState {
+        header: Header {
+            ..Default::default()
+        },
+        name: joints.clone(),
+        position: match initial_joint_state {
+            Some(p) => match p {
+                ParameterValue::StringArray(joints) => joints
+                    .iter()
+                    .map(|j| j.parse::<f64>().unwrap_or_default())
+                    .collect(),
+                _ => {
+                    r2r::log_warn!(
+                        NODE_ID,
+                        "Parameter 'initial_joint_state' has to be of type StringArray."
+                    );
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                }
+            },
+            None => {
+                r2r::log_warn!(NODE_ID, "Parameter 'initial_joint_state' not specified.");
+                vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            }
+        },
+        ..Default::default()
+    }));
 
+    // keep track of the parameters
     let ref_parameters = Arc::new(Mutex::new(Parameters::default()));
-    let ref_parameters_clone_1 = ref_parameters.clone();
 
+    // do we enable direct joint state control through a subscriber (disabled)
+    // or only the regular action request control (enabled - default)
+    let remote_control = Arc::new(Mutex::new(true));
+
+    // do we enable the ghost to constantly calculate inverse kinematics
+    // in order to try to follow the teaching marker's pose
+    let teaching_mode = Arc::new(Mutex::new(true));
+
+    // the main action service of this node to control the robot simulation
     let action_server =
         node.create_action_server::<SimpleRobotControl::Action>("simple_robot_control")?;
-    let pub_timer = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
+
+    // a service to enable or disable remote control
+    let remote_control_service =
+        node.create_service::<SetBool::Service>("srs_enable_remote_control")?;
+
+    // a service to enable or disable teaching mode
+    let teaching_mode_service =
+        node.create_service::<SetBool::Service>("srs_enable_teaching_mode")?;
+
+    // listen to direct joint state control when remote control is disabled
+    let joint_state_subscriber =
+        node.subscribe::<JointState>("simple_joint_control", QosProfile::default())?;
+
+    // listen to the teaching marker pose to calculate inverse kinematics from
+    let teaching_mode_subscriber =
+        node.subscribe::<Transform>("simple_robot_teaching_mode_pose", QosProfile::default())?;
+
+    // publish the actual joint state of the robot at the simulation rate
+    let pub_timer_1 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
     let joint_state_publisher =
         node.create_publisher::<JointState>("joint_states", QosProfile::default())?;
 
+    // publish the ghost joint state of the robot at the simulation rate
+    let pub_timer_2 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
+    let ghost_state_publisher =
+        node.create_publisher::<JointState>("ghost_joint_states", QosProfile::default())?;
+
+    // spawn a tokio task to handle publishing the joint state
+    let act_joint_state_clone_1 = act_joint_state.clone();
     tokio::task::spawn(async move {
-        match publisher_callback(joint_state_publisher, pub_timer, &act_joint_state_clone_2).await {
+        match publisher_callback(joint_state_publisher, pub_timer_1, &act_joint_state_clone_1).await
+        {
             Ok(()) => (),
             Err(e) => r2r::log_error!(NODE_ID, "Joint state publisher failed with: '{}'.", e),
         };
     });
 
+    // spawn a tokio task to handle publishing the ghost's joint state
+    let teaching_mode_clone_1 = teaching_mode.clone();
+    let act_joint_state_clone_2 = act_joint_state.clone();
+    let ghost_joint_state_clone_1 = ghost_joint_state.clone();
+    tokio::task::spawn(async move {
+        match ghost_publisher_callback(
+            ghost_state_publisher,
+            pub_timer_2,
+            &teaching_mode_clone_1,
+            &act_joint_state_clone_2,
+            &ghost_joint_state_clone_1,
+        )
+        .await
+        {
+            Ok(()) => (),
+            Err(e) => r2r::log_error!(NODE_ID, "Joint state publisher failed with: '{}'.", e),
+        };
+    });
+
+    // spawn a tokio task to listen to incomming joint state messages
+    let ref_joint_state_clone_1 = ref_joint_state.clone();
+    let remote_control_clone_1 = remote_control.clone();
+    tokio::task::spawn(async move {
+        match joint_subscriber_callback(
+            joint_state_subscriber,
+            &ref_joint_state_clone_1,
+            &remote_control_clone_1,
+        )
+        .await
+        {
+            Ok(()) => (),
+            Err(e) => r2r::log_error!(NODE_ID, "Joint state subscriber failed with {}.", e),
+        };
+    });
+
+    // spawn a tokio task to listen to incomming teaching marker poses
+    let ghost_joint_state_clone_2 = ghost_joint_state.clone();
+    let teaching_mode_clone_2 = teaching_mode.clone();
+    tokio::task::spawn(async move {
+        match teaching_subscriber_callback(
+            teaching_mode_subscriber,
+            &ghost_joint_state_clone_2,
+            &teaching_mode_clone_2,
+        )
+        .await
+        {
+            Ok(()) => (),
+            Err(e) => r2r::log_error!(NODE_ID, "Teaching mode subscriber failed with {}.", e),
+        };
+    });
+
+    // a client that asks a tf lookup service for transformations between frames in the tf tree
     let tf_lookup_client = node.create_client::<LookupTransform::Service>("tf_lookup")?;
     let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
 
+    // keep the node alive
     let handle = std::thread::spawn(move || loop {
         node.spin_once(std::time::Duration::from_millis(100));
     });
 
+    // before the other things in this node can start, it makes sense to wait for the tf lookup service to become alive
     r2r::log_warn!(NODE_ID, "Waiting for tf Lookup service...");
     waiting_for_tf_lookup_server.await?;
     r2r::log_info!(NODE_ID, "tf Lookup Service available.");
-    r2r::log_info!(NODE_ID, "Simple Robot Simulator node started.");
 
+    // offer a service to enable or disable remote control
+    let remote_control_clone_2 = remote_control.clone();
+    tokio::task::spawn(async move {
+        let result = remote_control_server(remote_control_service, &remote_control_clone_2).await;
+        match result {
+            Ok(()) => r2r::log_info!(NODE_ID, "Remote Control Service call succeeded."),
+            Err(e) => r2r::log_error!(NODE_ID, "Remote Control Service call failed with: {}.", e),
+        };
+    });
+
+    // offer a service to enable or disable teaching mode
+    let teaching_mode_clone_3 = teaching_mode.clone();
+    tokio::task::spawn(async move {
+        let result = teaching_mode_server(teaching_mode_service, &teaching_mode_clone_3).await;
+        match result {
+            Ok(()) => r2r::log_info!(NODE_ID, "Teaching Mode Service call succeeded."),
+            Err(e) => r2r::log_error!(NODE_ID, "Teaching Mode Service call failed with: {}.", e),
+        };
+    });
+
+    // spawn a tokio task that handles the main action service of this node
+    let remote_control_clone_3 = remote_control.clone();
+    let act_joint_state_clone_3 = act_joint_state.clone();
+    let ref_joint_state_clone_2 = ref_joint_state.clone();
+    let ref_parameters_clone_2 = ref_parameters.clone();
     tokio::task::spawn(async move {
         let result = simple_robot_simulator_server(
             action_server,
             tf_lookup_client,
             chain,
-            &act_joint_state_clone_1,
-            &ref_joint_state_clone_1,
-            &ref_parameters_clone_1,
+            &remote_control_clone_3,
+            &act_joint_state_clone_3,
+            &ref_joint_state_clone_2,
+            &ref_parameters_clone_2,
         )
         .await;
         match result {
@@ -170,11 +328,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
 
+    r2r::log_info!(NODE_ID, "Simple Robot Simulator node started.");
+
     handle.join().unwrap();
 
     Ok(())
 }
 
+// given a path for valid generated urdf, this will generate
+// manipulatable kinematic chain (which doesn't have to be serial)
 async fn chain_from_urdf_path(
     urdf_path: Option<&ParameterValue>,
 ) -> (Chain<f64>, Vec<String>, Vec<String>) {
@@ -183,19 +345,23 @@ async fn chain_from_urdf_path(
             ParameterValue::String(value) => value,
             _ => {
                 r2r::log_error!(NODE_ID, "Parameter 'urdf_path' has to be of type String.");
-                panic!() // OK to panic, makes no sense to sontinue without a urdf.
+                panic!() // OK to panic, makes no sense to continue without a urdf.
             }
         },
         None => {
             r2r::log_error!(NODE_ID, "Parameter 'urdf_path' not specified.");
-            panic!() // OK to panic, makes no sense to sontinue without a urdf.
+            panic!() // OK to panic, makes no sense to continue without a urdf.
         }
     };
 
     make_chain(path).await
 }
 
+// if going throught the launch file - xacro - robot description pipeline,
+// a raw urdf is provided, which has to be put in a temp file for the
+// kinematic chain generator to access (there might be a nicer way to do this)
 async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String>) {
+    // create the temp directory to store the urdf file in
     let dir = match tempdir() {
         Ok(d) => d,
         Err(e) => {
@@ -204,10 +370,11 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
                 "Failed to generate temporary urdf directory with: '{}'.",
                 e
             );
-            panic!() // OK to panic, makes no sense to sontinue without a urdf.
+            panic!() // OK to panic, makes no sense to continue without a urdf.
         }
     };
 
+    // create the temporary urdf file
     let urdf_path = dir.path().join("temp_urdf.urdf");
     let mut file = match File::create(urdf_path.clone()) {
         Ok(f) => {
@@ -220,10 +387,11 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
                 "Failed to generate temporary urdf file with: '{}'.",
                 e
             );
-            panic!() // OK to panic, makes no sense to sontinue without a urdf.
+            panic!() // OK to panic, makes no sense to continue without a urdf.
         }
     };
 
+    // dump the raw urdf to the generated file
     match write!(file, "{}", urdf) {
         Ok(()) => (),
         Err(e) => {
@@ -232,7 +400,7 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
                 "Failed to write to the temporary urdf file with: '{}'.",
                 e
             );
-            panic!() // OK to panic, makes no sense to sontinue without a urdf.
+            panic!() // OK to panic, makes no sense to continue without a urdf.
         }
     };
 
@@ -247,6 +415,7 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
 
     drop(file);
 
+    // once we have the chain, we don't need the urdf anymore
     match dir.close() {
         Ok(()) => (),
         Err(e) => {
@@ -261,6 +430,7 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
     (c, j, l)
 }
 
+// actually make the kinematic chain from the urdf file (supplied or generated)
 async fn make_chain(urdf_path: &str) -> (Chain<f64>, Vec<String>, Vec<String>) {
     match k::Chain::<f64>::from_urdf_file(urdf_path.clone()) {
         Ok(c) => {
@@ -277,96 +447,151 @@ async fn make_chain(urdf_path: &str) -> (Chain<f64>, Vec<String>, Vec<String>) {
         }
         Err(e) => {
             r2r::log_error!(NODE_ID, "Failed to handle urdf with: '{}'.", e);
-            panic!() // Still OK to panic, makes no sense to sontinue without a urdf.
+            panic!() // Still OK to panic, makes no sense to continue without a urdf.
         }
     }
 }
 
+// the main action service
 async fn simple_robot_simulator_server(
     mut requests: impl Stream<Item = r2r::ActionServerGoalRequest<SimpleRobotControl::Action>> + Unpin,
     tf_lookup_client: r2r::Client<LookupTransform::Service>,
     chain: Chain<f64>,
+    remote_control: &Arc<Mutex<bool>>,
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
     ref_parameters: &Arc<Mutex<Parameters>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let rc = *remote_control.lock().unwrap();
+    loop {
+        match requests.next().await {
+            Some(request) => match rc {
+                false => {
+                    r2r::log_warn!(
+                        NODE_ID,
+                        "Remote Control is disabled: Simple Robot Control Action request ignored."
+                    );
+                    continue;
+                }
+                true => {
+                    let (mut g, mut _cancel) = match request.accept() {
+                        Ok(res) => res,
+                        Err(e) => {
+                            r2r::log_error!(NODE_ID, "Could not accept goal request with '{}'.", e);
+                            continue;
+                        }
+                    };
+                    let g_clone = g.clone();
+                    match update_ref_values(
+                        g_clone,
+                        &chain,
+                        &tf_lookup_client,
+                        &act_joint_state,
+                        &ref_joint_state,
+                        &ref_parameters,
+                    )
+                    .await
+                    {
+                        Some(()) => {
+                            match simulate_movement(
+                                &act_joint_state,
+                                &ref_joint_state,
+                                &ref_parameters,
+                            )
+                            .await
+                            {
+                                Some(()) => {
+                                    match g.succeed(SimpleRobotControl::Result { success: true }) {
+                                        Ok(_) => (),
+                                        Err(e) => {
+                                            r2r::log_error!(
+                                                NODE_ID,
+                                                "Could not send result with '{}'.",
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    continue;
+                                }
+                                None => {
+                                    r2r::log_error!(
+                                        NODE_ID,
+                                        "Failed to simulate robot movement (event based).",
+                                    );
+                                    match g.abort(SimpleRobotControl::Result { success: false }) {
+                                        Ok(_) => (),
+                                        Err(e) => {
+                                            r2r::log_error!(
+                                                NODE_ID,
+                                                "Failed to abort with '{}'.",
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    continue;
+                                }
+                            }
+                        }
+                        None => {
+                            r2r::log_error!(NODE_ID, "Failed to update ref values.");
+                            match g.abort(SimpleRobotControl::Result { success: false }) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    r2r::log_error!(NODE_ID, "Failed to abort with '{}'.", e);
+                                    continue;
+                                }
+                            };
+                            continue;
+                        }
+                    };
+                }
+            },
+            None => (),
+        }
+    }
+}
+
+// offer a service to enable or dissable remote control
+async fn remote_control_server(
+    mut requests: impl Stream<Item = ServiceRequest<SetBool::Service>> + Unpin,
+    remote_control: &Arc<Mutex<bool>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match requests.next().await {
             Some(request) => {
-                let (mut g, mut _cancel) = match request.accept() {
-                    Ok(res) => res,
-                    Err(e) => {
-                        r2r::log_error!(NODE_ID, "Could not accept goal request with '{}'.", e);
-                        continue;
-                    }
-                };
-                let g_clone = g.clone();
-                match update_ref_values(
-                    g_clone,
-                    &chain,
-                    &tf_lookup_client,
-                    &act_joint_state,
-                    &ref_joint_state,
-                    &ref_parameters,
-                )
-                .await
-                {
-                    Some(()) => {
-                        match simulate_movement_event_based(
-                            &act_joint_state,
-                            &ref_joint_state,
-                            &ref_parameters,
-                        )
-                        .await
-                        {
-                            Some(()) => {
-                                match g.succeed(SimpleRobotControl::Result { success: true }) {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        r2r::log_error!(
-                                            NODE_ID,
-                                            "Could not send result with '{}'.",
-                                            e
-                                        );
-                                        continue;
-                                    }
-                                };
-                                continue;
-                            }
-                            None => {
-                                r2r::log_error!(
-                                    NODE_ID,
-                                    "Failed to simulate robot movement (event based).",
-                                );
-                                match g.abort(SimpleRobotControl::Result { success: false }) {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        r2r::log_error!(NODE_ID, "Failed to abort with '{}'.", e);
-                                        continue;
-                                    }
-                                };
-                                continue;
-                            }
-                        }
-                    }
-                    None => {
-                        r2r::log_error!(NODE_ID, "Failed to update ref values.",);
-                        match g.abort(SimpleRobotControl::Result { success: false }) {
-                            Ok(_) => (),
-                            Err(e) => {
-                                r2r::log_error!(NODE_ID, "Failed to abort with '{}'.", e);
-                                continue;
-                            }
-                        };
-                        continue;
-                    }
-                };
+                *remote_control.lock().unwrap() = request.message.data;
+                match request.message.data {
+                    false => r2r::log_info!(NODE_ID, "Remote Control Disabled."),
+                    true => r2r::log_info!(NODE_ID, "Remote Control Enabled."),
+                }
             }
             None => (),
         }
     }
 }
 
+// offer a service to enable or dissable teachinkg mode
+async fn teaching_mode_server(
+    mut requests: impl Stream<Item = ServiceRequest<SetBool::Service>> + Unpin,
+    teaching_mode: &Arc<Mutex<bool>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        match requests.next().await {
+            Some(request) => {
+                *teaching_mode.lock().unwrap() = request.message.data;
+                match request.message.data {
+                    false => r2r::log_info!(NODE_ID, "Live Follow Teaching Mode Disabled."),
+                    true => r2r::log_info!(NODE_ID, "Live Follow Teaching Mode Enabled."),
+                }
+            }
+            None => (),
+        }
+    }
+}
+
+// update the reference state based on the action request
 async fn update_ref_values(
     g: ActionServerGoal<SimpleRobotControl::Action>,
     chain: &Chain<f64>,
@@ -375,20 +600,25 @@ async fn update_ref_values(
     ref_joint_state: &Arc<Mutex<JointState>>,
     ref_parameters: &Arc<Mutex<Parameters>>,
 ) -> Option<()> {
+    // update the reference parameters
     *ref_parameters.lock().unwrap() = Parameters {
         velocity: g.goal.velocity,
         acceleration: g.goal.acceleration,
     };
 
+    // used to transfer other parts of the joint state data
     let mut new_ref_joint_state = ref_joint_state.lock().unwrap().clone();
 
     match g.goal.use_joint_positions {
+        // just go to the supplied joint state from the request
         true => {
             new_ref_joint_state.position = g.goal.joint_positions;
             *ref_joint_state.lock().unwrap() = new_ref_joint_state;
             Some(())
         }
+        // now we want to go to an actual pose from the tf tree
         false => {
+            // where is the goal feature frame in the robot's base frame
             let target_in_base = lookup_tf(
                 &g.goal.base_frame_id,
                 &g.goal.goal_feature_id,
@@ -397,6 +627,8 @@ async fn update_ref_values(
             )
             .await;
 
+            // where is the tool center point frame (or held item frame)
+            // in the face plate frame of the robot
             let tcp_in_face_plate = lookup_tf(
                 &g.goal.face_plate_id,
                 &g.goal.tcp_id,
@@ -405,10 +637,10 @@ async fn update_ref_values(
             )
             .await;
 
-            // add logging and error handling
             match tcp_in_face_plate {
                 Some(tcp_frame) => match target_in_base {
                     Some(target_frame) => {
+                        // the lookup found the transforms, let's update our chain
                         match generate_new_kinematic_chain(
                             &chain,
                             &g.goal.face_plate_id,
@@ -418,6 +650,7 @@ async fn update_ref_values(
                         .await
                         {
                             Some(new_chain) => {
+                                // using the new chain, find a valid joint state solution
                                 match calculate_inverse_kinematics(
                                     &new_chain,
                                     &g.goal.face_plate_id,
@@ -473,14 +706,24 @@ async fn update_ref_values(
     }
 }
 
+// the urdf only holds the joints and links of the robot that are always
+// defined in a never-changing way. Sometimes, when the robot is expected
+// to always use only one end effector and never change it, it could be reasonable
+// to add a new 'fixed' joint and the end effector link to the urdf. In our
+// use cases though, we would like to sometimes change tools, which changes the
+// tool center point and thus the relationships to the face plate frame. Thus we
+// always want to generate a new chain with the current configuration that we
+// looked up from the tf. Also, an item's frame that is currently being held
+// is also a reasonable tcp to be used when moving somewhere to leave the item.
 async fn generate_new_kinematic_chain(
     chain: &Chain<f64>,
     face_plate_id: &str,
     tcp_id: &str,
     frame: &TransformStamped,
 ) -> Option<Chain<f64>> {
-    r2r::log_info!(NODE_ID, "Generating new kinematic chain.",);
+    r2r::log_info!(NODE_ID, "Generating new kinematic chain.");
 
+    // make the new face_plate to tcp joint
     let face_plate_to_tcp_joint: Node<f64> = k::NodeBuilder::<f64>::new()
         .name(&format!("{}-{}", face_plate_id, tcp_id))
         .translation(Translation3::new(
@@ -494,26 +737,35 @@ async fn generate_new_kinematic_chain(
             frame.transform.rotation.y as f64,
             frame.transform.rotation.z as f64,
         )))
+        // have to make a rot joint, a fixed one is not recognized in DoF
         .joint_type(k::JointType::Rotational {
             axis: Vector3::y_axis(),
         })
         .finalize()
         .into();
 
+    // specify the tcp link
     let tcp_link = k::link::LinkBuilder::new().name(tcp_id).finalize();
     face_plate_to_tcp_joint.set_link(Some(tcp_link));
 
+    // get the last joint in the chain and hope to get the right one xD
     match chain
         .iter_joints()
         .map(|j| j.name.clone())
         .collect::<Vec<String>>()
         .last()
     {
+        // fetch the node that is specified by the last joint
         Some(parent) => match chain.find(parent) {
             Some(parent_node) => {
+                // specify the parent of the newly made face_plate-tcp joint
                 face_plate_to_tcp_joint.set_parent(parent_node);
+
+                // get all the nodes in the chain
                 let mut new_chain_nodes: Vec<k::Node<f64>> =
                     chain.iter().map(|x| x.clone()).collect();
+
+                // add the new joint and generate the new chain
                 new_chain_nodes.push(face_plate_to_tcp_joint);
                 Some(Chain::from_nodes(new_chain_nodes))
             }
@@ -529,6 +781,7 @@ async fn generate_new_kinematic_chain(
     }
 }
 
+// get a joint position for the frame to go to
 async fn calculate_inverse_kinematics(
     new_chain: &Chain<f64>,
     face_plate_id: &str,
@@ -537,16 +790,21 @@ async fn calculate_inverse_kinematics(
     act_joint_state: &Arc<Mutex<JointState>>,
 ) -> Option<Vec<f64>> {
     r2r::log_info!(NODE_ID, "Calculating inverse kinematics.",);
-    let mut pos = act_joint_state.lock().unwrap().clone().position;
-    pos.push(0.0);
 
     match new_chain.find(&format!("{}-{}", face_plate_id, tcp_id)) {
         Some(ee_joint) => {
+            // a chain can have branches, but a serial chain can't
+            // so we use that instead to help the solver
             let arm = k::SerialChain::from_end(ee_joint);
+
+            // since we have added a new joint, it is now a 7DoF robot
             let mut positions = act_joint_state.lock().unwrap().clone().position;
             positions.push(0.0);
+
+            // the solver needs an initial joint position to be set
             match arm.set_joint_positions(&positions) {
                 Ok(()) => {
+                    // will have to experiment with these solver parameters
                     let solver = k::JacobianIkSolver::new(0.01, 0.01, 0.5, 50);
 
                     let target = Isometry3::from_parts(
@@ -565,13 +823,16 @@ async fn calculate_inverse_kinematics(
 
                     r2r::log_info!(NODE_ID, "Solving inverse kinematics.",);
 
+                    // the last joint has to be rot type to be recognize, but we don't want it to roatate
                     let constraints = k::Constraints {
                         ignored_joint_names: vec![format!("{}-{}", face_plate_id, tcp_id)],
                         ..Default::default()
                     };
 
+                    // solve, but with locking the last joint that we added
                     match solver.solve_with_constraints(&arm, &target, &constraints) {
                         Ok(()) => {
+                            // get the solution and remove the seventh '0.0' joint value
                             let mut j = arm.joint_positions();
                             match j.pop() {
                                 Some(_) => Some(j),
@@ -608,12 +869,12 @@ async fn calculate_inverse_kinematics(
     }
 }
 
-async fn simulate_movement_event_based(
+// this task moves the act value towards the ref value
+async fn simulate_movement(
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
     ref_parameters: &Arc<Mutex<Parameters>>,
 ) -> Option<()> {
-
     let test_velocity = ref_parameters.lock().unwrap().velocity;
     let velocity = if test_velocity == 0.0 {
         1.0
@@ -692,10 +953,7 @@ async fn simulate_movement_event_based(
     Some(())
 }
 
-// async fn simulate_movement_state_based() {
-    // use regular pub sub...
-// }
-
+// publish the actual joint state
 async fn publisher_callback(
     publisher: r2r::Publisher<JointState>,
     mut timer: r2r::Timer,
@@ -717,7 +975,7 @@ async fn publisher_callback(
             position,
             ..Default::default()
         };
-        
+
         match publisher.publish(&updated_joint_state) {
             Ok(()) => (),
             Err(e) => {
@@ -728,6 +986,99 @@ async fn publisher_callback(
     }
 }
 
+//publish the ghost joint state
+async fn ghost_publisher_callback(
+    publisher: r2r::Publisher<JointState>,
+    mut timer: r2r::Timer,
+    teaching_mode: &Arc<Mutex<bool>>,
+    act_joint_state: &Arc<Mutex<JointState>>,
+    ghost_joint_state: &Arc<Mutex<JointState>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        // depending on the value of 'teaching mode', either publish the
+        // last calculated ghost value, or mimic the actual robot
+        let position = match *teaching_mode.lock().unwrap() {
+            false => act_joint_state.lock().unwrap().clone().position,
+            true => ghost_joint_state.lock().unwrap().clone().position,
+        };
+
+        let mut clock = r2r::Clock::create(r2r::ClockType::RosTime).unwrap();
+        let now = clock.get_now().unwrap();
+        let time_stamp = r2r::Clock::to_builtin_time(&now);
+
+        let updated_joint_state = JointState {
+            header: Header {
+                stamp: time_stamp.clone(),
+                ..Default::default()
+            },
+            name: ghost_joint_state.lock().unwrap().clone().name,
+            position,
+            ..Default::default()
+        };
+
+        match publisher.publish(&updated_joint_state) {
+            Ok(()) => (),
+            Err(e) => {
+                r2r::log_error!(NODE_ID, "Publisher failed to send a message with: '{}'", e);
+            }
+        };
+        timer.tick().await?;
+    }
+}
+
+// subscribe to the state based joint command when remote control is disabled
+async fn joint_subscriber_callback(
+    mut subscriber: impl Stream<Item = JointState> + Unpin,
+    ref_joint_state: &Arc<Mutex<JointState>>,
+    remote_control: &Arc<Mutex<bool>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        match subscriber.next().await {
+            Some(msg) => match *remote_control.lock().unwrap() {
+                false => {
+                    let mut new_ref_joint_state = ref_joint_state.lock().unwrap().clone();
+                    new_ref_joint_state.position = msg.position;
+                    *ref_joint_state.lock().unwrap() = new_ref_joint_state;
+                }
+                true => r2r::log_warn!(
+                    NODE_ID,
+                    "Remote Control is enabled: Joint State command message ignored."
+                ),
+            },
+            None => {
+                r2r::log_error!(NODE_ID, "Subscriber did not get the message?");
+                ()
+            }
+        }
+    }
+}
+
+// listen to the pose of the teaching marker so that the ghost knows where to go
+async fn teaching_subscriber_callback(
+    mut subscriber: impl Stream<Item = Transform> + Unpin,
+    ghost_joint_state: &Arc<Mutex<JointState>>,
+    teaching_mode: &Arc<Mutex<bool>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        match subscriber.next().await {
+            Some(msg) => match *teaching_mode.lock().unwrap() {
+                true => {
+                    ()
+                    // let mut new_ref_joint_state = ref_joint_state.lock().unwrap().clone();
+                    // new_ref_joint_state.position = msg.position;
+                    // *ref_joint_state.lock().unwrap() = new_ref_joint_state;
+                }
+                false => (),
+            },
+            None => {
+                r2r::log_error!(NODE_ID, "Subscriber did not get the message?");
+                ()
+            }
+        }
+    }
+}
+
+// ask the lookup service for transforms from its buffer
 async fn lookup_tf(
     parent_id: &str,
     child_id: &str,
@@ -742,7 +1093,7 @@ async fn lookup_tf(
 
     let response = tf_lookup_client
         .request(&request)
-        .expect("Could not send TF Lookup request.")
+        .expect("Could not send tf Lookup request.")
         .await
         .expect("Cancelled.");
 

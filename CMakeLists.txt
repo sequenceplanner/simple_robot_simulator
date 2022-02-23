@@ -11,6 +11,7 @@ include(r2r_cargo.cmake)
 
 # put ros package dependencies here.
 r2r_cargo(std_msgs               # just to test that it works
+          std_srvs
           rcl                    # we need the c ros2 api
           rcl_action             # as of r2r 0.1.0, we also need the action api
           simple_robot_simulator_msgs
@@ -24,7 +25,8 @@ r2r_cargo(std_msgs               # just to test that it works
 # install binaries
 install(PROGRAMS
   ${CMAKE_SOURCE_DIR}/target/release/simple_robot_simulator
-  ${CMAKE_SOURCE_DIR}/target/release/srs_event_based_test
+  ${CMAKE_SOURCE_DIR}/target/release/srs_frame_event_test
+  ${CMAKE_SOURCE_DIR}/target/release/srs_joint_event_test
   DESTINATION lib/${PROJECT_NAME}
 )
 
