@@ -23,25 +23,25 @@ pub static NODE_ID: &'static str = "simple_robot_simulator";
 pub static SIM_RATE_MS: u64 = 10;
 
 // node state variables
-// 1. act_joint_state   -   the actual joint position of the robot
-// 2. ref_joint_state   -   the reference (goal) position of the robot
-// 3. ghost_joint_state -   joint state of the 'ghost' robot that will try to
-//                          always follow the pose teaching interactive marker
-//                          by calculating inverse kinematics on the fly. This
-//                          will be done if the 'teaching' mode is enabled
-// 4. ref_parameters    -   reference parameter values for the simulation
-// 5. remote_control    -   when disabled, the robot can be controlled in a
-//                          manual mode, by listening directly to the joint
-//                          state topic 'simple_joint_control'. When enabled,
-//                          the robot can only be controlled through the
-//                          dedicated action request
-// 6. teaching_mode     -   when enabled, the ghost will follow the teacher
-// 7. current_chain     -   instead of making a new chain for the ghost,
-//                          but still update it live whenever the actual
-//                          robot chain is changes, this veriable will be
-//                          updated by the real robot and read by the ghost
-// 8. current_face_plate_id
-// 9. current_tcp_id
+// 1. act_joint_state       -       the actual joint position of the robot
+// 2. ref_joint_state       -       the reference (goal) position of the robot
+// 3. ghost_joint_state     -       joint state of the 'ghost' robot that will try to
+//                                  always follow the pose teaching interactive marker
+//                                  by calculating inverse kinematics on the fly. This
+//                                  will be done if the 'teaching' mode is enabled
+// 4. ref_parameters        -       reference parameter values for the simulation
+// 5. remote_control        -       when disabled, the robot can be controlled in a
+//                                  manual mode, by listening directly to the joint
+//                                  state topic 'simple_joint_control'. When enabled,
+//                                  the robot can only be controlled through the
+//                                  dedicated action request
+// 6. teaching_mode         -       when enabled, the ghost will follow the teacher
+// 7. current_chain         -       instead of making a new chain for the ghost,
+//                                  but still update it live whenever the actual
+//                                  robot chain is changes, this veriable will be
+//                                  updated by the real robot and read by the ghost
+// 8. current_face_plate_id -       info for the ghost
+// 9. current_tcp_id        -       info for the ghost
 
 #[derive(Default)]
 pub struct Parameters {
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // do we enable the ghost to constantly calculate inverse kinematics
     // in order to try to follow the teaching marker's pose (disabled - default)
-    let teaching_mode = Arc::new(Mutex::new(false));
+    let teaching_mode = Arc::new(Mutex::new(true));
 
     // since the actual and ghost chains are the same, the ghost can get the robots chain from this
     let current_chain = Arc::new(Mutex::new(chain.clone()));
@@ -210,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // listen to the teaching marker pose to calculate inverse kinematics from
     let teaching_mode_subscriber = node
-        .subscribe::<TransformStamped>("simple_robot_teaching_mode_pose", QosProfile::default())?;
+        .subscribe::<TransformStamped>("teaching_pose", QosProfile::default())?;
 
     // publish the actual joint state of the robot at the simulation rate
     let pub_timer_1 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
@@ -266,13 +266,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => r2r::log_error!(NODE_ID, "Joint state subscriber failed with {}.", e),
         };
     });
-
-    // mut subscriber: impl Stream<Item = TransformStamped> + Unpin,
-    // current_chain: &Arc<Mutex<Chain<f64>>>,
-    // current_face_plate_id: &Arc<Mutex<&str>>,
-    // current_tcp_id: &Arc<Mutex<&str>>,
-    // ghost_joint_state: &Arc<Mutex<JointState>>,
-    // teaching_mode: &Arc<Mutex<bool>>,
 
     // spawn a tokio task to listen to incomming teaching marker poses
     let ghost_joint_state_clone_2 = ghost_joint_state.clone();
@@ -335,11 +328,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let act_joint_state_clone_3 = act_joint_state.clone();
     let ref_joint_state_clone_2 = ref_joint_state.clone();
     let ref_parameters_clone_2 = ref_parameters.clone();
+    let current_chain_clone_2 = current_chain.clone();
     tokio::task::spawn(async move {
         let result = simple_robot_simulator_server(
             action_server,
             tf_lookup_client,
             chain,
+            &current_chain_clone_2,
             &remote_control_clone_3,
             &act_joint_state_clone_3,
             &ref_joint_state_clone_2,
@@ -485,6 +480,7 @@ async fn simple_robot_simulator_server(
     mut requests: impl Stream<Item = r2r::ActionServerGoalRequest<SimpleRobotControl::Action>> + Unpin,
     tf_lookup_client: r2r::Client<LookupTransform::Service>,
     chain: Chain<f64>,
+    ghost_chain: &Arc<Mutex<Chain<f64>>>,
     remote_control: &Arc<Mutex<bool>>,
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
@@ -517,6 +513,7 @@ async fn simple_robot_simulator_server(
                         &act_joint_state,
                         &ref_joint_state,
                         &ref_parameters,
+                        &ghost_chain
                     )
                     .await
                     {
@@ -627,6 +624,7 @@ async fn update_ref_values(
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
     ref_parameters: &Arc<Mutex<Parameters>>,
+    ghost_chain: &Arc<Mutex<Chain<f64>>>,
 ) -> Option<()> {
     // update the reference parameters
     *ref_parameters.lock().unwrap() = Parameters {
@@ -671,16 +669,19 @@ async fn update_ref_values(
                 Some(tcp_frame) => match target_in_base {
                     Some(target_frame) => {
                         // the lookup found the transforms, let's update our chain
+                        r2r::log_info!(NODE_ID, "Generating new kinematic chain.");
                         match generate_new_kinematic_chain(
                             &chain,
                             &g.goal.face_plate_id,
                             &g.goal.tcp_id,
                             &tcp_frame,
+                            &ghost_chain
                         )
                         .await
                         {
                             Some(new_chain) => {
                                 // using the new chain, find a valid joint state solution
+                                r2r::log_info!(NODE_ID, "Calculating inverse kinematics.");
                                 match calculate_inverse_kinematics(
                                     &new_chain,
                                     &g.goal.face_plate_id,
@@ -750,9 +751,8 @@ async fn generate_new_kinematic_chain(
     face_plate_id: &str,
     tcp_id: &str,
     frame: &TransformStamped,
+    ghost_chain: &Arc<Mutex<Chain<f64>>>,
 ) -> Option<Chain<f64>> {
-    r2r::log_info!(NODE_ID, "Generating new kinematic chain.");
-
     // make the new face_plate to tcp joint
     let face_plate_to_tcp_joint: Node<f64> = k::NodeBuilder::<f64>::new()
         .name(&format!("{}-{}", face_plate_id, tcp_id))
@@ -797,7 +797,9 @@ async fn generate_new_kinematic_chain(
 
                 // add the new joint and generate the new chain
                 new_chain_nodes.push(face_plate_to_tcp_joint);
-                Some(Chain::from_nodes(new_chain_nodes))
+                let new_chain = Chain::from_nodes(new_chain_nodes);
+                *ghost_chain.lock().unwrap() = new_chain.clone();
+                Some(new_chain)
             }
             None => {
                 r2r::log_error!(NODE_ID, "Failed to set parent node.");
@@ -817,12 +819,12 @@ async fn calculate_inverse_kinematics(
     face_plate_id: &str,
     tcp_id: &str,
     target_frame: &TransformStamped,
-    act_joint_state: &JointState, // &Arc<Mutex<JointState>>,
+    act_joint_state: &JointState,
 ) -> Option<Vec<f64>> {
-    r2r::log_info!(NODE_ID, "Calculating inverse kinematics.",);
-
+    println!("trying"); // aha ok fails because there is no generated chain...
     match new_chain.find(&format!("{}-{}", face_plate_id, tcp_id)) {
         Some(ee_joint) => {
+            println!("found");
             // a chain can have branches, but a serial chain can't
             // so we use that instead to help the solver
             let arm = k::SerialChain::from_end(ee_joint);
@@ -834,6 +836,7 @@ async fn calculate_inverse_kinematics(
             // the solver needs an initial joint position to be set
             match arm.set_joint_positions(&positions) {
                 Ok(()) => {
+                    println!("set pos");
                     // will have to experiment with these solver parameters
                     let solver = k::JacobianIkSolver::new(0.01, 0.01, 0.5, 50);
 
@@ -851,8 +854,6 @@ async fn calculate_inverse_kinematics(
                         )),
                     );
 
-                    r2r::log_info!(NODE_ID, "Solving inverse kinematics.",);
-
                     // the last joint has to be rot type to be recognize, but we don't want it to roatate
                     let constraints = k::Constraints {
                         ignored_joint_names: vec![format!("{}-{}", face_plate_id, tcp_id)],
@@ -862,6 +863,7 @@ async fn calculate_inverse_kinematics(
                     // solve, but with locking the last joint that we added
                     match solver.solve_with_constraints(&arm, &target, &constraints) {
                         Ok(()) => {
+                            println!("solved");
                             // get the solution and remove the seventh '0.0' joint value
                             let mut j = arm.joint_positions();
                             match j.pop() {
@@ -1101,15 +1103,23 @@ async fn teaching_subscriber_callback(
                     true => {
                         let mut new_ghost_joint_state = ghost_joint_state.lock().unwrap().clone();
                         let current_chain_local = current_chain.lock().unwrap().clone();
-                        let current_face_plate_id_local =
+                        let mut current_face_plate_id_local =
                             current_face_plate_id.lock().unwrap().clone();
-                        let current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
+                        let mut current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
                         let ghost_joint_state_local = ghost_joint_state.lock().unwrap().clone();
+
+                        //just to test
+                        current_face_plate_id_local = "tool0";
+                        current_tcp_id_local = "svt_tcp";
+
+                        println!("GOT MSG");
+
 
                         match (current_face_plate_id_local != "unknown")
                             & (current_tcp_id_local != "unknown")
                         {
                             true => {
+                                println!("LETS CALC");
                                 match calculate_inverse_kinematics(
                                     &current_chain_local,
                                     &current_face_plate_id_local,
@@ -1120,6 +1130,7 @@ async fn teaching_subscriber_callback(
                                 .await
                                 {
                                     Some(joints) => {
+                                        println!("good");
                                         new_ghost_joint_state.position = joints;
                                         *ghost_joint_state.lock().unwrap() = new_ghost_joint_state;
                                     }
