@@ -3,7 +3,7 @@ use k::nalgebra::Quaternion;
 use k::prelude::InverseKinematicsSolver;
 use k::{Chain, Node};
 use k::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use r2r::geometry_msgs::msg::{Transform, TransformStamped};
+use r2r::geometry_msgs::msg::TransformStamped;
 use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::std_msgs::msg::Header;
@@ -36,6 +36,12 @@ pub static SIM_RATE_MS: u64 = 10;
 //                          the robot can only be controlled through the
 //                          dedicated action request
 // 6. teaching_mode     -   when enabled, the ghost will follow the teacher
+// 7. current_chain     -   instead of making a new chain for the ghost,
+//                          but still update it live whenever the actual
+//                          robot chain is changes, this veriable will be
+//                          updated by the real robot and read by the ghost
+// 8. current_face_plate_id
+// 9. current_tcp_id
 
 #[derive(Default)]
 pub struct Parameters {
@@ -174,8 +180,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let remote_control = Arc::new(Mutex::new(true));
 
     // do we enable the ghost to constantly calculate inverse kinematics
-    // in order to try to follow the teaching marker's pose
-    let teaching_mode = Arc::new(Mutex::new(true));
+    // in order to try to follow the teaching marker's pose (disabled - default)
+    let teaching_mode = Arc::new(Mutex::new(false));
+
+    // since the actual and ghost chains are the same, the ghost can get the robots chain from this
+    let current_chain = Arc::new(Mutex::new(chain.clone()));
+
+    // so that the ghosts knows how to calculate inverse kinematics
+    let current_face_plate = Arc::new(Mutex::new("unknown"));
+
+    // so that the ghosts knows how to calculate inverse kinematics
+    let current_tcp = Arc::new(Mutex::new("unknown"));
 
     // the main action service of this node to control the robot simulation
     let action_server =
@@ -194,8 +209,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node.subscribe::<JointState>("simple_joint_control", QosProfile::default())?;
 
     // listen to the teaching marker pose to calculate inverse kinematics from
-    let teaching_mode_subscriber =
-        node.subscribe::<Transform>("simple_robot_teaching_mode_pose", QosProfile::default())?;
+    let teaching_mode_subscriber = node
+        .subscribe::<TransformStamped>("simple_robot_teaching_mode_pose", QosProfile::default())?;
 
     // publish the actual joint state of the robot at the simulation rate
     let pub_timer_1 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
@@ -252,12 +267,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
 
+    // mut subscriber: impl Stream<Item = TransformStamped> + Unpin,
+    // current_chain: &Arc<Mutex<Chain<f64>>>,
+    // current_face_plate_id: &Arc<Mutex<&str>>,
+    // current_tcp_id: &Arc<Mutex<&str>>,
+    // ghost_joint_state: &Arc<Mutex<JointState>>,
+    // teaching_mode: &Arc<Mutex<bool>>,
+
     // spawn a tokio task to listen to incomming teaching marker poses
     let ghost_joint_state_clone_2 = ghost_joint_state.clone();
     let teaching_mode_clone_2 = teaching_mode.clone();
+    let current_chain_clone_1 = current_chain.clone();
+    let current_face_plate_clone_1 = current_face_plate.clone();
+    let current_tcp_clone_1 = current_tcp.clone();
     tokio::task::spawn(async move {
         match teaching_subscriber_callback(
             teaching_mode_subscriber,
+            &current_chain_clone_1,
+            &current_face_plate_clone_1,
+            &current_tcp_clone_1,
             &ghost_joint_state_clone_2,
             &teaching_mode_clone_2,
         )
@@ -637,6 +665,8 @@ async fn update_ref_values(
             )
             .await;
 
+            let act_joint_state_local = &act_joint_state.lock().unwrap().clone();
+
             match tcp_in_face_plate {
                 Some(tcp_frame) => match target_in_base {
                     Some(target_frame) => {
@@ -656,7 +686,7 @@ async fn update_ref_values(
                                     &g.goal.face_plate_id,
                                     &g.goal.tcp_id,
                                     &target_frame,
-                                    &act_joint_state,
+                                    &act_joint_state_local,
                                 )
                                 .await
                                 {
@@ -787,7 +817,7 @@ async fn calculate_inverse_kinematics(
     face_plate_id: &str,
     tcp_id: &str,
     target_frame: &TransformStamped,
-    act_joint_state: &Arc<Mutex<JointState>>,
+    act_joint_state: &JointState, // &Arc<Mutex<JointState>>,
 ) -> Option<Vec<f64>> {
     r2r::log_info!(NODE_ID, "Calculating inverse kinematics.",);
 
@@ -798,7 +828,7 @@ async fn calculate_inverse_kinematics(
             let arm = k::SerialChain::from_end(ee_joint);
 
             // since we have added a new joint, it is now a 7DoF robot
-            let mut positions = act_joint_state.lock().unwrap().clone().position;
+            let mut positions = act_joint_state.position.clone(); //.lock().unwrap().clone().position;
             positions.push(0.0);
 
             // the solver needs an initial joint position to be set
@@ -1054,22 +1084,55 @@ async fn joint_subscriber_callback(
 }
 
 // listen to the pose of the teaching marker so that the ghost knows where to go
+// the ghost's chain will change whenever the actual chain changes
 async fn teaching_subscriber_callback(
-    mut subscriber: impl Stream<Item = Transform> + Unpin,
+    mut subscriber: impl Stream<Item = TransformStamped> + Unpin,
+    current_chain: &Arc<Mutex<Chain<f64>>>,
+    current_face_plate_id: &Arc<Mutex<&str>>,
+    current_tcp_id: &Arc<Mutex<&str>>,
     ghost_joint_state: &Arc<Mutex<JointState>>,
     teaching_mode: &Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match subscriber.next().await {
-            Some(msg) => match *teaching_mode.lock().unwrap() {
-                true => {
-                    ()
-                    // let mut new_ref_joint_state = ref_joint_state.lock().unwrap().clone();
-                    // new_ref_joint_state.position = msg.position;
-                    // *ref_joint_state.lock().unwrap() = new_ref_joint_state;
+            Some(msg) => {
+                let teaching_mode_local = *teaching_mode.lock().unwrap();
+                match teaching_mode_local {
+                    true => {
+                        let mut new_ghost_joint_state = ghost_joint_state.lock().unwrap().clone();
+                        let current_chain_local = current_chain.lock().unwrap().clone();
+                        let current_face_plate_id_local =
+                            current_face_plate_id.lock().unwrap().clone();
+                        let current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
+                        let ghost_joint_state_local = ghost_joint_state.lock().unwrap().clone();
+
+                        match (current_face_plate_id_local != "unknown")
+                            & (current_tcp_id_local != "unknown")
+                        {
+                            true => {
+                                match calculate_inverse_kinematics(
+                                    &current_chain_local,
+                                    &current_face_plate_id_local,
+                                    &current_tcp_id_local,
+                                    &msg,
+                                    &ghost_joint_state_local,
+                                )
+                                .await
+                                {
+                                    Some(joints) => {
+                                        new_ghost_joint_state.position = joints;
+                                        *ghost_joint_state.lock().unwrap() = new_ghost_joint_state;
+                                    }
+                                    None => (),
+                                };
+                                ()
+                            }
+                            false => (),
+                        }
+                    }
+                    false => (),
                 }
-                false => (),
-            },
+            }
             None => {
                 r2r::log_error!(NODE_ID, "Subscriber did not get the message?");
                 ()
