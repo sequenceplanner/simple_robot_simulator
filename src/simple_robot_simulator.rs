@@ -42,6 +42,7 @@ pub static SIM_RATE_MS: u64 = 10;
 //                                  updated by the real robot and read by the ghost
 // 8. current_face_plate_id -       info for the ghost
 // 9. current_tcp_id        -       info for the ghost
+// face_plate_id and base_link_id   - maybe we can send that in via launch files and not msgs
 
 #[derive(Default)]
 pub struct Parameters {
@@ -62,10 +63,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let params_things_clone_2 = params_things.clone();
     let params_things_clone_3 = params_things.clone();
     let params_things_clone_4 = params_things.clone();
+    let params_things_clone_5 = params_things.clone();
+    let params_things_clone_6 = params_things.clone();
     let use_urdf_from_path = params_things_clone_1.get("use_urdf_from_path");
     let urdf_path = params_things_clone_2.get("urdf_path");
     let urdf_raw = params_things_clone_3.get("urdf_raw");
     let initial_joint_state = params_things_clone_4.get("initial_joint_state");
+    let initial_face_plate_id_param = params_things_clone_5.get("initial_face_plate_id");
+    let initial_tcp_id_param = params_things_clone_6.get("initial_tcp_id");
+
+    let initial_face_plate_id = match initial_face_plate_id_param {
+        Some(p) => match p {
+            ParameterValue::String(value) => value.to_string(),
+            _ => {
+                r2r::log_warn!(
+                    NODE_ID,
+                    "Parameter 'initial_face_plate_id' has to be of type String."
+                );
+                "unknown".to_string()
+            }
+        },
+        None => {
+            r2r::log_warn!(NODE_ID, "Parameter 'initial_face_plate_id' not specified.");
+            "unknown".to_string()
+        }
+    };
+
+    let initial_tcp_id = match initial_tcp_id_param {
+        Some(p) => match p {
+            ParameterValue::String(value) => value.to_string(),
+            _ => {
+                r2r::log_warn!(
+                    NODE_ID,
+                    "Parameter 'initial_tcp_id' has to be of type String."
+                );
+                "unknown".to_string()
+            }
+        },
+        None => {
+            r2r::log_warn!(NODE_ID, "Parameter 'initial_tcp_id' not specified.");
+            "unknown".to_string()
+        }
+    };
 
     // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
     let (chain, joints, links) = match use_urdf_from_path {
@@ -187,10 +226,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let current_chain = Arc::new(Mutex::new(chain.clone()));
 
     // so that the ghosts knows how to calculate inverse kinematics
-    let current_face_plate = Arc::new(Mutex::new("unknown"));
+    let current_face_plate = Arc::new(Mutex::new(initial_face_plate_id));
 
     // so that the ghosts knows how to calculate inverse kinematics
-    let current_tcp = Arc::new(Mutex::new("unknown"));
+    let current_tcp = Arc::new(Mutex::new(initial_tcp_id));
 
     // the main action service of this node to control the robot simulation
     let action_server =
@@ -209,8 +248,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node.subscribe::<JointState>("simple_joint_control", QosProfile::default())?;
 
     // listen to the teaching marker pose to calculate inverse kinematics from
-    let teaching_mode_subscriber = node
-        .subscribe::<TransformStamped>("teaching_pose", QosProfile::default())?;
+    let teaching_mode_subscriber =
+        node.subscribe::<TransformStamped>("teaching_pose", QosProfile::default())?;
 
     // publish the actual joint state of the robot at the simulation rate
     let pub_timer_1 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
@@ -220,7 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // publish the ghost joint state of the robot at the simulation rate
     let pub_timer_2 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
     let ghost_state_publisher =
-        node.create_publisher::<JointState>("ghost_joint_states", QosProfile::default())?;
+        node.create_publisher::<JointState>("/ghost/joint_states", QosProfile::default())?;
 
     // spawn a tokio task to handle publishing the joint state
     let act_joint_state_clone_1 = act_joint_state.clone();
@@ -513,7 +552,7 @@ async fn simple_robot_simulator_server(
                         &act_joint_state,
                         &ref_joint_state,
                         &ref_parameters,
-                        &ghost_chain
+                        &ghost_chain,
                     )
                     .await
                     {
@@ -675,7 +714,7 @@ async fn update_ref_values(
                             &g.goal.face_plate_id,
                             &g.goal.tcp_id,
                             &tcp_frame,
-                            &ghost_chain
+                            &ghost_chain,
                         )
                         .await
                         {
@@ -821,10 +860,9 @@ async fn calculate_inverse_kinematics(
     target_frame: &TransformStamped,
     act_joint_state: &JointState,
 ) -> Option<Vec<f64>> {
-    println!("trying"); // aha ok fails because there is no generated chain...
     match new_chain.find(&format!("{}-{}", face_plate_id, tcp_id)) {
         Some(ee_joint) => {
-            println!("found");
+
             // a chain can have branches, but a serial chain can't
             // so we use that instead to help the solver
             let arm = k::SerialChain::from_end(ee_joint);
@@ -836,7 +874,7 @@ async fn calculate_inverse_kinematics(
             // the solver needs an initial joint position to be set
             match arm.set_joint_positions(&positions) {
                 Ok(()) => {
-                    println!("set pos");
+
                     // will have to experiment with these solver parameters
                     let solver = k::JacobianIkSolver::new(0.01, 0.01, 0.5, 50);
 
@@ -863,7 +901,7 @@ async fn calculate_inverse_kinematics(
                     // solve, but with locking the last joint that we added
                     match solver.solve_with_constraints(&arm, &target, &constraints) {
                         Ok(()) => {
-                            println!("solved");
+
                             // get the solution and remove the seventh '0.0' joint value
                             let mut j = arm.joint_positions();
                             match j.pop() {
@@ -1043,7 +1081,14 @@ async fn ghost_publisher_callback(
                 stamp: time_stamp.clone(),
                 ..Default::default()
             },
-            name: ghost_joint_state.lock().unwrap().clone().name,
+            name: ghost_joint_state
+                .lock()
+                .unwrap()
+                .clone()
+                .name
+                .iter()
+                .map(|x| format!("ghost_{}", x))
+                .collect(),
             position,
             ..Default::default()
         };
@@ -1090,8 +1135,8 @@ async fn joint_subscriber_callback(
 async fn teaching_subscriber_callback(
     mut subscriber: impl Stream<Item = TransformStamped> + Unpin,
     current_chain: &Arc<Mutex<Chain<f64>>>,
-    current_face_plate_id: &Arc<Mutex<&str>>,
-    current_tcp_id: &Arc<Mutex<&str>>,
+    current_face_plate_id: &Arc<Mutex<String>>,
+    current_tcp_id: &Arc<Mutex<String>>,
     ghost_joint_state: &Arc<Mutex<JointState>>,
     teaching_mode: &Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1103,23 +1148,15 @@ async fn teaching_subscriber_callback(
                     true => {
                         let mut new_ghost_joint_state = ghost_joint_state.lock().unwrap().clone();
                         let current_chain_local = current_chain.lock().unwrap().clone();
-                        let mut current_face_plate_id_local =
+                        let current_face_plate_id_local =
                             current_face_plate_id.lock().unwrap().clone();
-                        let mut current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
+                        let current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
                         let ghost_joint_state_local = ghost_joint_state.lock().unwrap().clone();
-
-                        //just to test
-                        current_face_plate_id_local = "tool0";
-                        current_tcp_id_local = "svt_tcp";
-
-                        println!("GOT MSG");
-
 
                         match (current_face_plate_id_local != "unknown")
                             & (current_tcp_id_local != "unknown")
                         {
                             true => {
-                                println!("LETS CALC");
                                 match calculate_inverse_kinematics(
                                     &current_chain_local,
                                     &current_face_plate_id_local,
@@ -1130,7 +1167,6 @@ async fn teaching_subscriber_callback(
                                 .await
                                 {
                                     Some(joints) => {
-                                        println!("good");
                                         new_ghost_joint_state.position = joints;
                                         *ghost_joint_state.lock().unwrap() = new_ghost_joint_state;
                                     }
