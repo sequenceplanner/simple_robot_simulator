@@ -7,7 +7,7 @@ use r2r::geometry_msgs::msg::TransformStamped;
 use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::std_msgs::msg::Header;
-use r2r::std_srvs::srv::SetBool;
+use r2r::std_srvs::srv::{SetBool, Trigger};
 use r2r::tf_tools_msgs::srv::LookupTransform;
 use r2r::ActionServerGoal;
 use r2r::ParameterValue;
@@ -243,6 +243,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let teaching_mode_service =
         node.create_service::<SetBool::Service>("srs_enable_teaching_mode")?;
 
+    // a service to trigger the move from current pose to ghost pose
+    let match_ghost_service =
+        node.create_service::<Trigger::Service>("match_ghost")?;
+
     // listen to direct joint state control when remote control is disabled
     let joint_state_subscriber =
         node.subscribe::<JointState>("simple_joint_control", QosProfile::default())?;
@@ -359,6 +363,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match result {
             Ok(()) => r2r::log_info!(NODE_ID, "Teaching Mode Service call succeeded."),
             Err(e) => r2r::log_error!(NODE_ID, "Teaching Mode Service call failed with: {}.", e),
+        };
+    });
+
+    // offer a service to trigger the movement from the current position to match the ghost
+    let teaching_mode_clone_4 = teaching_mode.clone();
+    let ref_joint_state_clone_3 = ref_joint_state.clone();
+    let ghost_joint_state_clone_3 = ghost_joint_state.clone();
+    tokio::task::spawn(async move {
+        let result = match_ghost_server(match_ghost_service, &teaching_mode_clone_4, &ref_joint_state_clone_3, &ghost_joint_state_clone_3).await;
+        match result {
+            Ok(()) => r2r::log_info!(NODE_ID, "Match Ghost Service call succeeded."),
+            Err(e) => r2r::log_error!(NODE_ID, "Match Ghost Service call failed with: {}.", e),
         };
     });
 
