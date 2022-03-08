@@ -1,0 +1,54 @@
+# Request
+
+# Name of the base frame of the robot, i.e the
+# where the robot's kinematic chain starts in the URDF.
+# Default for the UR robots is 'base'.
+string base_frame_id base
+
+# Name of the end (attachment) frame of the robot, i.e.
+# where the robot's kinematic chain ends in the URDF.
+# Default for the UR robots is 'tool0'.
+string face_plate_id tool0
+
+# Name of the tool center point (TCP) to be used to go
+# to the goal feature frame. This can for example be 
+# the grasping frame of a tool, or maybe the frame of
+# an item that is already being held by the gripper.
+string tcp_id
+
+# Name of the goal frame in the tf tree to go to with 
+# the tcp frame.
+string goal_feature_id
+
+# The maximum time that should be spent looking up tf
+# in milliseconds. Default is 3000ms.
+int32 tf_lookup_deadline 3000
+
+# Joint acceleration of leading axis [rad/s^2].
+float64 acceleration
+
+# Joint velocity of leading axis [rad/s].
+float64 velocity
+
+# Direct joint positions can be used
+# instead of finding an inverse kinematics solution.
+# By default, frames in the tf tree are used.
+bool use_joint_positions false
+float64[] joint_positions
+
+# A preferred joint configuration can be set if moving to a frame, 
+# so that the IK solver can choose it if possible (TODO).
+# bool use_preferred_joint_config
+# JointState preferred_joint_config
+
+---
+# Reply
+
+# If the control action was successful.
+bool success
+
+---
+# Feedback
+
+# Current state of the action execution.
+string current_state

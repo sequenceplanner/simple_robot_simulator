@@ -22,28 +22,6 @@ use tokio::time::{sleep, Duration};
 pub static NODE_ID: &'static str = "simple_robot_simulator";
 pub static SIM_RATE_MS: u64 = 10;
 
-// node state variables
-// 1. act_joint_state       -       the actual joint position of the robot
-// 2. ref_joint_state       -       the reference (goal) position of the robot
-// 3. ghost_joint_state     -       joint state of the 'ghost' robot that will try to
-//                                  always follow the pose teaching interactive marker
-//                                  by calculating inverse kinematics on the fly. This
-//                                  will be done if the 'teaching' mode is enabled
-// 4. ref_parameters        -       reference parameter values for the simulation
-// 5. remote_control        -       when disabled, the robot can be controlled in a
-//                                  manual mode, by listening directly to the joint
-//                                  state topic 'simple_joint_control'. When enabled,
-//                                  the robot can only be controlled through the
-//                                  dedicated action request
-// 6. teaching_mode         -       when enabled, the ghost will follow the teacher
-// 7. current_chain         -       instead of making a new chain for the ghost,
-//                                  but still update it live whenever the actual
-//                                  robot chain is changes, this veriable will be
-//                                  updated by the real robot and read by the ghost
-// 8. current_face_plate_id -       info for the ghost
-// 9. current_tcp_id        -       info for the ghost
-// face_plate_id and base_link_id   - maybe we can send that in via launch files and not msgs
-
 #[derive(Default)]
 pub struct Parameters {
     pub acceleration: f64,
@@ -56,98 +34,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, NODE_ID, "")?;
 
-    // handle parameters passed on from the launch files
-    let params = node.params.clone();
-    let params_things = params.lock().unwrap(); // OK to panic
-    let params_things_clone_1 = params_things.clone();
-    let params_things_clone_2 = params_things.clone();
-    let params_things_clone_3 = params_things.clone();
-    let params_things_clone_4 = params_things.clone();
-    let params_things_clone_5 = params_things.clone();
-    let params_things_clone_6 = params_things.clone();
-    let use_urdf_from_path = params_things_clone_1.get("use_urdf_from_path");
-    let urdf_path = params_things_clone_2.get("urdf_path");
-    let urdf_raw = params_things_clone_3.get("urdf_raw");
-    let initial_joint_state = params_things_clone_4.get("initial_joint_state");
-    let initial_face_plate_id_param = params_things_clone_5.get("initial_face_plate_id");
-    let initial_tcp_id_param = params_things_clone_6.get("initial_tcp_id");
-
-    let initial_face_plate_id = match initial_face_plate_id_param {
-        Some(p) => match p {
-            ParameterValue::String(value) => value.to_string(),
-            _ => {
-                r2r::log_warn!(
-                    NODE_ID,
-                    "Parameter 'initial_face_plate_id' has to be of type String."
-                );
-                "unknown".to_string()
-            }
-        },
-        None => {
-            r2r::log_warn!(NODE_ID, "Parameter 'initial_face_plate_id' not specified.");
-            "unknown".to_string()
-        }
-    };
-
-    let initial_tcp_id = match initial_tcp_id_param {
-        Some(p) => match p {
-            ParameterValue::String(value) => value.to_string(),
-            _ => {
-                r2r::log_warn!(
-                    NODE_ID,
-                    "Parameter 'initial_tcp_id' has to be of type String."
-                );
-                "unknown".to_string()
-            }
-        },
-        None => {
-            r2r::log_warn!(NODE_ID, "Parameter 'initial_tcp_id' not specified.");
-            "unknown".to_string()
-        }
-    };
-
-    // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
-    let (chain, joints, links) = match use_urdf_from_path {
-        Some(p) => match p {
-            ParameterValue::Bool(value) => match value {
-                true => chain_from_urdf_path(urdf_path).await,
-                false => {
-                    match urdf_raw {
-                        Some(p2) => match p2 {
-                            ParameterValue::String(urdf) => chain_from_urdf_raw(urdf).await,
-                            _ => {
-                                r2r::log_error!(
-                                    NODE_ID,
-                                    "Parameter 'urdf_raw' has to be of type String."
-                                );
-                                panic!() // OK to panic, makes no sense to continue without a urdf
-                            }
-                        },
-                        None => {
-                            r2r::log_error!(NODE_ID, "Parameter 'urdf_raw' not specified.");
-                            panic!() // OK to panic, makes no sense to continue without a urdf
-                        }
-                    }
+        // handle parameters passed on from the launch filessimple_robot_simulator
+        let params = node.params.clone();
+        let params_things = params.lock().unwrap(); // OK to panic
+        let urdf_raw = params_things.get("urdf_raw");
+        let initial_joint_state = params_things.get("initial_joint_state");
+    
+        // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
+        let (chain, joints, links) = match urdf_raw {
+            Some(p2) => match p2 {
+                ParameterValue::String(urdf) => chain_from_urdf_raw(urdf).await,
+                _ => {
+                    r2r::log_error!(NODE_ID, "Parameter 'urdf_raw' has to be of type String.");
+                    panic!() // OK to panic, makes no sense to continue without a urdf
                 }
             },
-            _ => {
-                r2r::log_error!(
-                    NODE_ID,
-                    "Parameter 'use_urdf_from_path' has to be of type Bool."
-                );
-                panic!() // OK to panic, wrong type supplied
+            None => {
+                r2r::log_error!(NODE_ID, "Parameter 'urdf_raw' not specified.");
+                panic!() // OK to panic, makes no sense to continue without a urdf
             }
-        },
-        // Assumes use_urdf_from_path == true
-        None => chain_from_urdf_path(urdf_path).await,
-    };
-
-    // did we get what we expected
-    r2r::log_info!(NODE_ID, "Found joints: {:?}", joints);
-    r2r::log_info!(NODE_ID, "Found links: {:?}", links);
-
-    // where is the robot now
-    let act_joint_state = Arc::new(Mutex::new(JointState {
+        };
+    
+        // did we get what we expected
+        r2r::log_info!(NODE_ID, "Found joints: {:?}", joints);
+        r2r::log_info!(NODE_ID, "Found links: {:?}", links);
+    
+    let initial_joint_value = JointState {
         header: Header {
             ..Default::default()
         },
@@ -163,16 +75,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         NODE_ID,
                         "Parameter 'initial_joint_state' has to be of type StringArray."
                     );
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    chain
+                    .iter_joints()
+                    .map(|_| 0.0)
+                    .collect()
                 }
             },
             None => {
-                r2r::log_warn!(NODE_ID, "Parameter 'initial_joint_state' not specified.");
-                vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                r2r::log_info!(
+                    NODE_ID,
+                    "Parameter 'initial_joint_state' not specified, avg of limits will be used."
+                );
+                chain
+                    .iter_joints()
+                    .map(|x| match x.limits {
+                        Some(l) => (l.max + l.min) / 2.0,
+                        None => 0.0,
+                    })
+                    .collect()
             }
         },
         ..Default::default()
-    }));
+    };
+
+    // where is the robot now
+    let act_joint_state= Arc::new(Mutex::new(initial_joint_value));
 
     // where does the robot have to go
     let ref_joint_state = Arc::new(Mutex::new(JointState {
@@ -183,31 +110,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     }));
 
-    // where is the ghost now, is it following the teacher or mimcking the actual robot
+    // initialize the ghost joint state
     let ghost_joint_state = Arc::new(Mutex::new(JointState {
         header: Header {
             ..Default::default()
         },
         name: joints.clone(),
-        position: match initial_joint_state {
-            Some(p) => match p {
-                ParameterValue::StringArray(joints) => joints
-                    .iter()
-                    .map(|j| j.parse::<f64>().unwrap_or_default())
-                    .collect(),
-                _ => {
-                    r2r::log_warn!(
-                        NODE_ID,
-                        "Parameter 'initial_joint_state' has to be of type StringArray."
-                    );
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                }
-            },
-            None => {
-                r2r::log_warn!(NODE_ID, "Parameter 'initial_joint_state' not specified.");
-                vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            }
-        },
         ..Default::default()
     }));
 
@@ -218,30 +126,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // or only the regular action request control (enabled - default)
     let remote_control = Arc::new(Mutex::new(true));
 
-    // do we enable the ghost to constantly calculate inverse kinematics
-    // in order to try to follow the teaching marker's pose (disabled - default)
-    let teaching_mode = Arc::new(Mutex::new(true));
-
-    // since the actual and ghost chains are the same, the ghost can get the robots chain from this
-    let current_chain = Arc::new(Mutex::new(chain.clone()));
-
-    // so that the ghosts knows how to calculate inverse kinematics
-    let current_face_plate = Arc::new(Mutex::new(initial_face_plate_id));
-
-    // so that the ghosts knows how to calculate inverse kinematics
-    let current_tcp = Arc::new(Mutex::new(initial_tcp_id));
-
     // the main action service of this node to control the robot simulation
     let action_server =
         node.create_action_server::<SimpleRobotControl::Action>("simple_robot_control")?;
 
     // a service to enable or disable remote control
     let remote_control_service =
-        node.create_service::<SetBool::Service>("srs_enable_remote_control")?;
+        node.create_service::<SetBool::Service>("enable_remote_control")?;
 
-    // a service to enable or disable teaching mode
-    let teaching_mode_service =
-        node.create_service::<SetBool::Service>("srs_enable_teaching_mode")?;
+    // // a service to enable or disable teaching mode
+    // let teaching_mode_service =
+    // node.create_service::<SetBool::Service>("enable_teaching_mode")?;
 
     // a service to trigger the move from current pose to ghost pose
     let match_ghost_service =
@@ -251,43 +146,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let joint_state_subscriber =
         node.subscribe::<JointState>("simple_joint_control", QosProfile::default())?;
 
-    // listen to the teaching marker pose to calculate inverse kinematics from
-    let teaching_mode_subscriber =
-        node.subscribe::<TransformStamped>("teaching_pose", QosProfile::default())?;
+    // listen to the current teaching ghost pose to go to (in teaching mode?)
+    let ghost_state_subscriber =
+        node.subscribe::<JointState>("ghost/joint_states", QosProfile::default())?;
 
     // publish the actual joint state of the robot at the simulation rate
     let pub_timer_1 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
     let joint_state_publisher =
         node.create_publisher::<JointState>("joint_states", QosProfile::default())?;
 
-    // publish the ghost joint state of the robot at the simulation rate
-    let pub_timer_2 = node.create_wall_timer(std::time::Duration::from_millis(SIM_RATE_MS))?;
-    let ghost_state_publisher =
-        node.create_publisher::<JointState>("/ghost/joint_states", QosProfile::default())?;
-
     // spawn a tokio task to handle publishing the joint state
     let act_joint_state_clone_1 = act_joint_state.clone();
     tokio::task::spawn(async move {
         match publisher_callback(joint_state_publisher, pub_timer_1, &act_joint_state_clone_1).await
-        {
-            Ok(()) => (),
-            Err(e) => r2r::log_error!(NODE_ID, "Joint state publisher failed with: '{}'.", e),
-        };
-    });
-
-    // spawn a tokio task to handle publishing the ghost's joint state
-    let teaching_mode_clone_1 = teaching_mode.clone();
-    let act_joint_state_clone_2 = act_joint_state.clone();
-    let ghost_joint_state_clone_1 = ghost_joint_state.clone();
-    tokio::task::spawn(async move {
-        match ghost_publisher_callback(
-            ghost_state_publisher,
-            pub_timer_2,
-            &teaching_mode_clone_1,
-            &act_joint_state_clone_2,
-            &ghost_joint_state_clone_1,
-        )
-        .await
         {
             Ok(()) => (),
             Err(e) => r2r::log_error!(NODE_ID, "Joint state publisher failed with: '{}'.", e),
@@ -310,25 +181,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
 
-    // spawn a tokio task to listen to incomming teaching marker poses
-    let ghost_joint_state_clone_2 = ghost_joint_state.clone();
-    let teaching_mode_clone_2 = teaching_mode.clone();
-    let current_chain_clone_1 = current_chain.clone();
-    let current_face_plate_clone_1 = current_face_plate.clone();
-    let current_tcp_clone_1 = current_tcp.clone();
+    // spawn a tokio task to listen to incomming ghost joint state messages 
+    //(maybe only enable this in teaching mode to save computation)
+    let ghost_joint_state_clone_1 = ghost_joint_state.clone();
     tokio::task::spawn(async move {
-        match teaching_subscriber_callback(
-            teaching_mode_subscriber,
-            &current_chain_clone_1,
-            &current_face_plate_clone_1,
-            &current_tcp_clone_1,
-            &ghost_joint_state_clone_2,
-            &teaching_mode_clone_2,
+        match ghost_subscriber_callback(
+            ghost_state_subscriber,
+            &ghost_joint_state_clone_1
         )
         .await
         {
             Ok(()) => (),
-            Err(e) => r2r::log_error!(NODE_ID, "Teaching mode subscriber failed with {}.", e),
+            Err(e) => r2r::log_error!(NODE_ID, "Joint state subscriber failed with {}.", e),
         };
     });
 
@@ -356,22 +220,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
 
-    // offer a service to enable or disable teaching mode
-    let teaching_mode_clone_3 = teaching_mode.clone();
-    tokio::task::spawn(async move {
-        let result = teaching_mode_server(teaching_mode_service, &teaching_mode_clone_3).await;
-        match result {
-            Ok(()) => r2r::log_info!(NODE_ID, "Teaching Mode Service call succeeded."),
-            Err(e) => r2r::log_error!(NODE_ID, "Teaching Mode Service call failed with: {}.", e),
-        };
-    });
-
     // offer a service to trigger the movement from the current position to match the ghost
-    let teaching_mode_clone_4 = teaching_mode.clone();
     let ref_joint_state_clone_3 = ref_joint_state.clone();
-    let ghost_joint_state_clone_3 = ghost_joint_state.clone();
+    let ghost_joint_state_clone_2 = ghost_joint_state.clone();
     tokio::task::spawn(async move {
-        let result = match_ghost_server(match_ghost_service, &teaching_mode_clone_4, &ref_joint_state_clone_3, &ghost_joint_state_clone_3).await;
+        let result = match_ghost_server(match_ghost_service, &ref_joint_state_clone_3, &ghost_joint_state_clone_2).await;
         match result {
             Ok(()) => r2r::log_info!(NODE_ID, "Match Ghost Service call succeeded."),
             Err(e) => r2r::log_error!(NODE_ID, "Match Ghost Service call failed with: {}.", e),
@@ -383,13 +236,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let act_joint_state_clone_3 = act_joint_state.clone();
     let ref_joint_state_clone_2 = ref_joint_state.clone();
     let ref_parameters_clone_2 = ref_parameters.clone();
-    let current_chain_clone_2 = current_chain.clone();
     tokio::task::spawn(async move {
         let result = simple_robot_simulator_server(
             action_server,
             tf_lookup_client,
             chain,
-            &current_chain_clone_2,
             &remote_control_clone_3,
             &act_joint_state_clone_3,
             &ref_joint_state_clone_2,
@@ -411,28 +262,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     handle.join().unwrap();
 
     Ok(())
-}
-
-// given a path for valid generated urdf, this will generate
-// manipulatable kinematic chain (which doesn't have to be serial)
-async fn chain_from_urdf_path(
-    urdf_path: Option<&ParameterValue>,
-) -> (Chain<f64>, Vec<String>, Vec<String>) {
-    let path = match urdf_path {
-        Some(param) => match param {
-            ParameterValue::String(value) => value,
-            _ => {
-                r2r::log_error!(NODE_ID, "Parameter 'urdf_path' has to be of type String.");
-                panic!() // OK to panic, makes no sense to continue without a urdf.
-            }
-        },
-        None => {
-            r2r::log_error!(NODE_ID, "Parameter 'urdf_path' not specified.");
-            panic!() // OK to panic, makes no sense to continue without a urdf.
-        }
-    };
-
-    make_chain(path).await
 }
 
 // if going throught the launch file - xacro - robot description pipeline,
@@ -535,7 +364,6 @@ async fn simple_robot_simulator_server(
     mut requests: impl Stream<Item = r2r::ActionServerGoalRequest<SimpleRobotControl::Action>> + Unpin,
     tf_lookup_client: r2r::Client<LookupTransform::Service>,
     chain: Chain<f64>,
-    ghost_chain: &Arc<Mutex<Chain<f64>>>,
     remote_control: &Arc<Mutex<bool>>,
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
@@ -568,7 +396,6 @@ async fn simple_robot_simulator_server(
                         &act_joint_state,
                         &ref_joint_state,
                         &ref_parameters,
-                        &ghost_chain,
                     )
                     .await
                     {
@@ -652,19 +479,22 @@ async fn remote_control_server(
     }
 }
 
-// offer a service to enable or dissable teachinkg mode
-async fn teaching_mode_server(
-    mut requests: impl Stream<Item = ServiceRequest<SetBool::Service>> + Unpin,
-    teaching_mode: &Arc<Mutex<bool>>,
+// offer a service to enable or dissable remote control
+async fn match_ghost_server(
+    mut requests: impl Stream<Item = ServiceRequest<Trigger::Service>> + Unpin,
+    ref_joint_state: &Arc<Mutex<JointState>>,
+    ghost_joint_state: &Arc<Mutex<JointState>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match requests.next().await {
-            Some(request) => {
-                *teaching_mode.lock().unwrap() = request.message.data;
-                match request.message.data {
-                    false => r2r::log_info!(NODE_ID, "Live Follow Teaching Mode Disabled."),
-                    true => r2r::log_info!(NODE_ID, "Live Follow Teaching Mode Enabled."),
-                }
+            Some(_) => {
+                r2r::log_info!(NODE_ID, "Got request to match ghost.");
+                let old_ref_js = ref_joint_state.lock().unwrap().clone();
+                let mut new_ref_joint_state = old_ref_js.clone();
+                new_ref_joint_state.position = ghost_joint_state.lock().unwrap().clone().position;
+                r2r::log_info!(NODE_ID, "Old ref joint state: {:?}", old_ref_js);
+                r2r::log_info!(NODE_ID, "Ghost joint state: {:?}", new_ref_joint_state);
+                *ref_joint_state.lock().unwrap() = new_ref_joint_state;
             }
             None => (),
         }
@@ -679,7 +509,6 @@ async fn update_ref_values(
     act_joint_state: &Arc<Mutex<JointState>>,
     ref_joint_state: &Arc<Mutex<JointState>>,
     ref_parameters: &Arc<Mutex<Parameters>>,
-    ghost_chain: &Arc<Mutex<Chain<f64>>>,
 ) -> Option<()> {
     // update the reference parameters
     *ref_parameters.lock().unwrap() = Parameters {
@@ -730,7 +559,6 @@ async fn update_ref_values(
                             &g.goal.face_plate_id,
                             &g.goal.tcp_id,
                             &tcp_frame,
-                            &ghost_chain,
                         )
                         .await
                         {
@@ -806,7 +634,6 @@ async fn generate_new_kinematic_chain(
     face_plate_id: &str,
     tcp_id: &str,
     frame: &TransformStamped,
-    ghost_chain: &Arc<Mutex<Chain<f64>>>,
 ) -> Option<Chain<f64>> {
     // make the new face_plate to tcp joint
     let face_plate_to_tcp_joint: Node<f64> = k::NodeBuilder::<f64>::new()
@@ -853,7 +680,6 @@ async fn generate_new_kinematic_chain(
                 // add the new joint and generate the new chain
                 new_chain_nodes.push(face_plate_to_tcp_joint);
                 let new_chain = Chain::from_nodes(new_chain_nodes);
-                *ghost_chain.lock().unwrap() = new_chain.clone();
                 Some(new_chain)
             }
             None => {
@@ -1072,53 +898,6 @@ async fn publisher_callback(
     }
 }
 
-//publish the ghost joint state
-async fn ghost_publisher_callback(
-    publisher: r2r::Publisher<JointState>,
-    mut timer: r2r::Timer,
-    teaching_mode: &Arc<Mutex<bool>>,
-    act_joint_state: &Arc<Mutex<JointState>>,
-    ghost_joint_state: &Arc<Mutex<JointState>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        // depending on the value of 'teaching mode', either publish the
-        // last calculated ghost value, or mimic the actual robot
-        let position = match *teaching_mode.lock().unwrap() {
-            false => act_joint_state.lock().unwrap().clone().position,
-            true => ghost_joint_state.lock().unwrap().clone().position,
-        };
-
-        let mut clock = r2r::Clock::create(r2r::ClockType::RosTime).unwrap();
-        let now = clock.get_now().unwrap();
-        let time_stamp = r2r::Clock::to_builtin_time(&now);
-
-        let updated_joint_state = JointState {
-            header: Header {
-                stamp: time_stamp.clone(),
-                ..Default::default()
-            },
-            name: ghost_joint_state
-                .lock()
-                .unwrap()
-                .clone()
-                .name
-                .iter()
-                .map(|x| format!("ghost_{}", x))
-                .collect(),
-            position,
-            ..Default::default()
-        };
-
-        match publisher.publish(&updated_joint_state) {
-            Ok(()) => (),
-            Err(e) => {
-                r2r::log_error!(NODE_ID, "Publisher failed to send a message with: '{}'", e);
-            }
-        };
-        timer.tick().await?;
-    }
-}
-
 // subscribe to the state based joint command when remote control is disabled
 async fn joint_subscriber_callback(
     mut subscriber: impl Stream<Item = JointState> + Unpin,
@@ -1146,56 +925,18 @@ async fn joint_subscriber_callback(
     }
 }
 
-// listen to the pose of the teaching marker so that the ghost knows where to go
-// the ghost's chain will change whenever the actual chain changes
-async fn teaching_subscriber_callback(
-    mut subscriber: impl Stream<Item = TransformStamped> + Unpin,
-    current_chain: &Arc<Mutex<Chain<f64>>>,
-    current_face_plate_id: &Arc<Mutex<String>>,
-    current_tcp_id: &Arc<Mutex<String>>,
+// subscribe to the current joint pose of the ghost robot
+async fn ghost_subscriber_callback(
+    mut subscriber: impl Stream<Item = JointState> + Unpin,
     ghost_joint_state: &Arc<Mutex<JointState>>,
-    teaching_mode: &Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match subscriber.next().await {
             Some(msg) => {
-                let teaching_mode_local = *teaching_mode.lock().unwrap();
-                match teaching_mode_local {
-                    true => {
-                        let mut new_ghost_joint_state = ghost_joint_state.lock().unwrap().clone();
-                        let current_chain_local = current_chain.lock().unwrap().clone();
-                        let current_face_plate_id_local =
-                            current_face_plate_id.lock().unwrap().clone();
-                        let current_tcp_id_local = current_tcp_id.lock().unwrap().clone();
-                        let ghost_joint_state_local = ghost_joint_state.lock().unwrap().clone();
-
-                        match (current_face_plate_id_local != "unknown")
-                            & (current_tcp_id_local != "unknown")
-                        {
-                            true => {
-                                match calculate_inverse_kinematics(
-                                    &current_chain_local,
-                                    &current_face_plate_id_local,
-                                    &current_tcp_id_local,
-                                    &msg,
-                                    &ghost_joint_state_local,
-                                )
-                                .await
-                                {
-                                    Some(joints) => {
-                                        new_ghost_joint_state.position = joints;
-                                        *ghost_joint_state.lock().unwrap() = new_ghost_joint_state;
-                                    }
-                                    None => (),
-                                };
-                                ()
-                            }
-                            false => (),
-                        }
-                    }
-                    false => (),
-                }
-            }
+                let mut new_joint_state = ghost_joint_state.lock().unwrap().clone();
+                new_joint_state.position = msg.position;
+                *ghost_joint_state.lock().unwrap() = new_joint_state;
+            },
             None => {
                 r2r::log_error!(NODE_ID, "Subscriber did not get the message?");
                 ()
