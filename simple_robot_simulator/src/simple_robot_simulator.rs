@@ -222,9 +222,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // offer a service to trigger the movement from the current position to match the ghost
     let ref_joint_state_clone_3 = ref_joint_state.clone();
+    let act_joint_state_clone_4 = act_joint_state.clone();
     let ghost_joint_state_clone_2 = ghost_joint_state.clone();
+    let ref_parameters_clone_3 = ref_parameters.clone();
     tokio::task::spawn(async move {
-        let result = match_ghost_server(match_ghost_service, &ref_joint_state_clone_3, &ghost_joint_state_clone_2).await;
+        let result = match_ghost_server(match_ghost_service, &ref_joint_state_clone_3, &act_joint_state_clone_4, &ghost_joint_state_clone_2, &ref_parameters_clone_3).await;
         match result {
             Ok(()) => r2r::log_info!(NODE_ID, "Match Ghost Service call succeeded."),
             Err(e) => r2r::log_error!(NODE_ID, "Match Ghost Service call failed with: {}.", e),
@@ -483,7 +485,9 @@ async fn remote_control_server(
 async fn match_ghost_server(
     mut requests: impl Stream<Item = ServiceRequest<Trigger::Service>> + Unpin,
     ref_joint_state: &Arc<Mutex<JointState>>,
+    act_joint_state: &Arc<Mutex<JointState>>,
     ghost_joint_state: &Arc<Mutex<JointState>>,
+    ref_parameters: &Arc<Mutex<Parameters>>
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match requests.next().await {
@@ -495,6 +499,16 @@ async fn match_ghost_server(
                 r2r::log_info!(NODE_ID, "Old ref joint state: {:?}", old_ref_js);
                 r2r::log_info!(NODE_ID, "Ghost joint state: {:?}", new_ref_joint_state);
                 *ref_joint_state.lock().unwrap() = new_ref_joint_state;
+                match simulate_movement(
+                    &act_joint_state,
+                    &ref_joint_state,
+                    &ref_parameters,
+                )
+                .await
+                {
+                    Some(()) => (),
+                    None => ()
+                }
             }
             None => (),
         }
