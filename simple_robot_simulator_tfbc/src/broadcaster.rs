@@ -27,6 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // handle parameters passed on from the launch files
     let params = node.params.clone();
     let params_things = params.lock().unwrap(); // OK to panic
+
+    // load scenario path should actually be a service where you send in a path to the folder
     let scenario_path = params_things.get("scenario_path");
 
     let mut scenario = vec![];
