@@ -8,7 +8,7 @@ use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::std_msgs::msg::Header;
 use r2r::std_srvs::srv::{SetBool, Trigger};
-use r2r::tf_tools_msgs::srv::LookupTransform;
+use r2r::scene_manipulation_msgs::srv::LookupTransform;
 use r2r::ActionServerGoal;
 use r2r::ParameterValue;
 use r2r::QosProfile;
