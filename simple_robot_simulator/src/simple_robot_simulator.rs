@@ -197,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // a client that asks a tf lookup service for transformations between frames in the tf tree
-    let tf_lookup_client = node.create_client::<LookupTransform::Service>("tf_lookup")?;
+    let tf_lookup_client = node.create_client::<LookupTransform::Service>("lookup_transform")?;
     let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
 
     // keep the node alive
