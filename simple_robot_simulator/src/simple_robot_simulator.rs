@@ -492,7 +492,7 @@ async fn match_ghost_server(
     loop {
         match requests.next().await {
             Some(_) => {
-                r2r::log_info!(NODE_ID, "Got request to match ghost.");
+                r2r::log_info!(NODE_ID, "Got request to match ghost."); // the new ur controller should also have this
                 let old_ref_js = ref_joint_state.lock().unwrap().clone();
                 let mut new_ref_joint_state = old_ref_js.clone();
                 new_ref_joint_state.position = ghost_joint_state.lock().unwrap().clone().position;
@@ -536,7 +536,7 @@ async fn update_ref_values(
     match g.goal.use_joint_positions {
         // just go to the supplied joint state from the request
         true => {
-            new_ref_joint_state.position = g.goal.joint_positions;
+            new_ref_joint_state.position = g.goal.joint_positions.position;
             *ref_joint_state.lock().unwrap() = new_ref_joint_state;
             Some(())
         }
@@ -546,7 +546,7 @@ async fn update_ref_values(
             let target_in_base = lookup_tf(
                 &g.goal.base_frame_id,
                 &g.goal.goal_feature_id,
-                g.goal.tf_lookup_deadline,
+                // g.goal.tf_lookup_deadline,
                 tf_lookup_client,
             )
             .await;
@@ -556,7 +556,7 @@ async fn update_ref_values(
             let tcp_in_face_plate = lookup_tf(
                 &g.goal.face_plate_id,
                 &g.goal.tcp_id,
-                g.goal.tf_lookup_deadline,
+                // g.goal.tf_lookup_deadline,
                 tf_lookup_client,
             )
             .await;
@@ -611,10 +611,10 @@ async fn update_ref_values(
                     None => {
                         r2r::log_error!(
                             NODE_ID,
-                            "Failed to lookup TF for: '{}' => '{}' in {} ms.",
+                            "Failed to lookup TF for: '{}' => '{}'.",
                             &g.goal.base_frame_id,
                             &g.goal.goal_feature_id,
-                            &g.goal.tf_lookup_deadline,
+                            // &g.goal.tf_lookup_deadline,
                         );
                         None
                     }
@@ -622,10 +622,10 @@ async fn update_ref_values(
                 None => {
                     r2r::log_error!(
                         NODE_ID,
-                        "Failed to lookup TF for: '{}' => '{}' in {} ms.",
+                        "Failed to lookup TF for: '{}' => '{}'.",
                         &g.goal.face_plate_id,
                         &g.goal.tcp_id,
-                        &g.goal.tf_lookup_deadline,
+                        // &g.goal.tf_lookup_deadline,
                     );
                     None
                 }
@@ -748,7 +748,7 @@ async fn calculate_inverse_kinematics(
                         )),
                     );
 
-                    // the last joint has to be rot type to be recognize, but we don't want it to roatate
+                    // the last joint has to be rot type to be recognize, but we don't want it to rotate
                     let constraints = k::Constraints {
                         ignored_joint_names: vec![format!("{}-{}", face_plate_id, tcp_id)],
                         ..Default::default()
@@ -963,13 +963,13 @@ async fn ghost_subscriber_callback(
 async fn lookup_tf(
     parent_frame_id: &str,
     child_frame_id: &str,
-    deadline: i32,
+    // deadline: i32,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
 ) -> Option<TransformStamped> {
     let request = LookupTransform::Request {
         parent_frame_id: parent_frame_id.to_string(),
         child_frame_id: child_frame_id.to_string(),
-        deadline,
+        // deadline,
     };
 
     let response = tf_lookup_client

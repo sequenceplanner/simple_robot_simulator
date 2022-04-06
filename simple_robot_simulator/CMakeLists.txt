@@ -25,8 +25,6 @@ r2r_cargo(std_msgs               # just to test that it works
 # install binaries
 install(PROGRAMS
   ${CMAKE_SOURCE_DIR}/target/release/simple_robot_simulator
-  ${CMAKE_SOURCE_DIR}/target/release/srs_frame_event_test
-  ${CMAKE_SOURCE_DIR}/target/release/srs_joint_event_test
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -17,10 +17,10 @@ k = "0.27.1"
 name = "simple_robot_simulator"
 path = "src/simple_robot_simulator.rs"
 
-[[bin]]
-name = "srs_frame_event_test"
-path = "src/srs_frame_event_test.rs"
+# [[bin]]
+# name = "srs_frame_event_test"
+# path = "src/srs_frame_event_test.rs"
 
-[[bin]]
-name = "srs_joint_event_test"
-path = "src/srs_joint_event_test.rs"
+# [[bin]]
+# name = "srs_joint_event_test"
+# path = "src/srs_joint_event_test.rs"

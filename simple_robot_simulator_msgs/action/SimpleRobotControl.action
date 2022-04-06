@@ -20,10 +20,6 @@ string tcp_id
 # the tcp frame.
 string goal_feature_id
 
-# The maximum time that should be spent looking up tf
-# in milliseconds. Default is 3000ms.
-int32 tf_lookup_deadline 3000
-
 # Joint acceleration of leading axis [rad/s^2].
 float64 acceleration
 
@@ -34,12 +30,12 @@ float64 velocity
 # instead of finding an inverse kinematics solution.
 # By default, frames in the tf tree are used.
 bool use_joint_positions false
-float64[] joint_positions
+sensor_msgs/JointState joint_positions
 
 # A preferred joint configuration can be set if moving to a frame, 
 # so that the IK solver can choose it if possible (TODO).
 # bool use_preferred_joint_config
-# JointState preferred_joint_config
+# sensor_msgs/JointState preferred_joint_config
 
 ---
 # Reply

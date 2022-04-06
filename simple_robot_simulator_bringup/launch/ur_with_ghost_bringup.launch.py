@@ -243,7 +243,7 @@ def generate_launch_description():
     ghost_robot_parameters = {
         "urdf_raw": ghost_robot_description_content,
         "initial_joint_state": ["0.0", "-1.5707", "1.5707", "-1.5707", "-1.5707", "0.0"],
-        "initial_base_link_id": "ghost_" + "base_link",
+        "initial_base_link_id": "ghost_" + "base",
         "initial_face_plate_id": "ghost_" + "tool0",
         "initial_tcp_id": "ghost_" + "svt_tcp"
     }
@@ -251,7 +251,7 @@ def generate_launch_description():
     robot_parameters = {
         "urdf_raw": robot_description_content,
         "initial_joint_state": ["0.0", "-1.5707", "1.5707", "-1.5707", "-1.5707", "0.0"],
-        "initial_base_link_id": "base_link",
+        "initial_base_link_id": "base",
         "initial_face_plate_id":"tool0",
         "initial_tcp_id":"svt_tcp"
     }

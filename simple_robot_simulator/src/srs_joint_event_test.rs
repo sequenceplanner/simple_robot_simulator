@@ -1,5 +1,6 @@
 use r2r;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
+use r2r::sensor_msgs::msg::JointState;
 
 pub static NODE_ID: &'static str = "srs_event_based_test";
 
@@ -23,7 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let goal = SimpleRobotControl::Goal {
         use_joint_positions: true,
-        joint_positions: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        joint_positions: JointState {
+            position: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        } 
         ..Default::default()
     };
 
