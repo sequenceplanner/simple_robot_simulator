@@ -39,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let params_things = params.lock().unwrap(); // OK to panic
         let urdf_raw = params_things.get("urdf_raw");
         let initial_joint_state = params_things.get("initial_joint_state");
+        let prefix = params_things.get("prefix");
     
         // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
         let (chain, joints, links) = match urdf_raw {
