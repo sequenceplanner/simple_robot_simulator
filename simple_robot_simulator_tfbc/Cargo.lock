@@ -469,9 +469,9 @@ dependencies = [
 
 [[package]]
 name = "r2r"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7576c8418ebd9e537715acbd6ba391d8b281eeb84ae0d10e9c633b84570e9f5"
+checksum = "dd15cdd7896978e06a87ddec84889fcf5d7d40f5143fb6ebf2c4f70a500aabb4"
 dependencies = [
  "futures",
  "lazy_static",
@@ -479,7 +479,6 @@ dependencies = [
  "r2r_common",
  "r2r_msg_gen",
  "r2r_rcl",
- "retain_mut",
  "serde",
  "serde_json",
  "thiserror",
@@ -488,12 +487,11 @@ dependencies = [
 
 [[package]]
 name = "r2r_actions"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbd9220633b7292e34d1fa1c959a2b3c412d1e1dbe7f20918c61203f4b7681b5"
+checksum = "8edc692318136cf94e6e77c5ef49c29b99a53439e79c9d6bbe693da107329f21"
 dependencies = [
  "bindgen",
- "itertools",
  "r2r_common",
  "r2r_msg_gen",
  "r2r_rcl",
@@ -501,15 +499,19 @@ dependencies = [
 
 [[package]]
 name = "r2r_common"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89bc8c0e0fb6c3304ec02d4bc51bb5875215118691ead1bb30fe7424cb82dae5"
+checksum = "d28504e3cef5ba0dfa50febc734c6126443896ed1c50addc3f216e31b713d41f"
+dependencies = [
+ "bindgen",
+ "itertools",
+]
 
 [[package]]
 name = "r2r_msg_gen"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f07dab0be5ad8ae9627654a6803f9ad0219cae2ca2f7184d1f9212147b5539f"
+checksum = "397bbb65a304bf2467178fcc91f9ab111bd2d0608c098c116c9e3399c9bd388a"
 dependencies = [
  "bindgen",
  "heck",
@@ -520,12 +522,11 @@ dependencies = [
 
 [[package]]
 name = "r2r_rcl"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c635a186ba1e30eb062598f0fe6ebab1d7c59283669b25d2596446287b777d46"
+checksum = "8d363f4a9b1119e367fbbfbe68164674d782adf8d5d11ba73c65d6ded9028f74"
 dependencies = [
  "bindgen",
- "itertools",
  "paste",
  "r2r_common",
  "widestring",
@@ -565,12 +566,6 @@ checksum = "3acd125665422973a33ac9d3dd2df85edad0f4ae9b00dafb1a05e43a9f5ef8e7"
 dependencies = [
  "winapi",
 ]
-
-[[package]]
-name = "retain_mut"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51dd4445360338dab5116712bee1388dc727991d51969558a8882ab552e6db30"
 
 [[package]]
 name = "rustc-hash"

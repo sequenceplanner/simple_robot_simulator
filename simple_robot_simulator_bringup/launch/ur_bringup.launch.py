@@ -250,7 +250,7 @@ def generate_launch_description():
         robot_state_publisher_node,
         simple_robot_simulator_node,
         rviz_node,
-        tfbc_node
+        # tfbc_node
     ]
 
     return LaunchDescription(declared_arguments + nodes_to_start)
