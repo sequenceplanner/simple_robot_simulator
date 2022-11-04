@@ -198,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // a client that asks a tf lookup service for transformations between frames in the tf tree
-    let tf_lookup_client = node.create_client::<LookupTransform::Service>("lookup_transform")?;
+    let tf_lookup_client = node.create_client::<LookupTransform::Service>("/lookup_transform")?;
     let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
 
     // keep the node alive
@@ -815,7 +815,7 @@ async fn simulate_movement(
     let mut act_pos = act_values
         .position
         .iter()
-        .map(|x| (*x * 10000.0).round() / 10000.0)
+        .map(|x| (*x * 100000.0).round() / 100000.0)
         .collect::<Vec<f64>>();
 
     let ref_pos = ref_joint_state
@@ -824,7 +824,7 @@ async fn simulate_movement(
         .clone()
         .position
         .iter()
-        .map(|x| (*x * 10000.0).round() / 10000.0)
+        .map(|x| (*x * 100000.0).round() / 100000.0)
         .collect::<Vec<f64>>();
 
     while act_pos != ref_pos {
@@ -856,11 +856,11 @@ async fn simulate_movement(
                 let step = 0.1 * velocity * std::f64::consts::PI / 180.0;
 
                 if x < &(y - step) && z > &0.1 {
-                    new_act_pos.push(((y - step * z) * 10000.0).round() / 10000.0)
+                    new_act_pos.push(((y - step * z) * 100000.0).round() / 100000.0)
                 } else if x > &(y + step) && z > &0.1 {
-                    new_act_pos.push(((y + step * z) * 10000.0).round() / 10000.0)
+                    new_act_pos.push(((y + step * z) * 100000.0).round() / 100000.0)
                 } else {
-                    new_act_pos.push((*x * 10000.0).round() / 10000.0)
+                    new_act_pos.push((*x * 100000.0).round() / 100000.0)
                 }
             });
 
