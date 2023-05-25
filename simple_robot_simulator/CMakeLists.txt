@@ -24,7 +24,7 @@ r2r_cargo(std_msgs               # just to test that it works
 
 # install binaries
 install(PROGRAMS
-  ${CMAKE_SOURCE_DIR}/target/release/simple_robot_simulator
+  ${CMAKE_SOURCE_DIR}/target/colcon/simple_robot_simulator
   DESTINATION lib/${PROJECT_NAME}
 )
 
