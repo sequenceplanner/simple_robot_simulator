@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let urdf_raw = params_things.get("urdf_raw");
         let initial_joint_state = params_things.get("initial_joint_state");
         let prefix = params_things.get("prefix");
-    
+
         // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
         let (chain, joints, links) = match urdf_raw {
             Some(p2) => match p2 {
@@ -55,11 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 panic!() // OK to panic, makes no sense to continue without a urdf
             }
         };
-    
+
         // did we get what we expected
         r2r::log_info!(NODE_ID, "Found joints: {:?}", joints);
         r2r::log_info!(NODE_ID, "Found links: {:?}", links);
-    
+
     let initial_joint_value = JointState {
         header: Header {
             ..Default::default()
@@ -182,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
 
-    // spawn a tokio task to listen to incomming ghost joint state messages 
+    // spawn a tokio task to listen to incomming ghost joint state messages
     //(maybe only enable this in teaching mode to save computation)
     let ghost_joint_state_clone_1 = ghost_joint_state.clone();
     tokio::task::spawn(async move {
@@ -590,6 +590,9 @@ async fn update_ref_values(
                                 .await
                                 {
                                     Some(new_joints) => {
+                                        let _r = g.publish_feedback(SimpleRobotControl::Feedback {
+                                            current_state: "computed inverse kinematics, moving...".into()
+                                        });
                                         new_ref_joint_state.position = new_joints;
                                         *ref_joint_state.lock().unwrap() = new_ref_joint_state;
                                         Some(())
@@ -599,6 +602,9 @@ async fn update_ref_values(
                                             NODE_ID,
                                             "Failed to calculate inverse kinematics.",
                                         );
+                                        let _r = g.publish_feedback(SimpleRobotControl::Feedback {
+                                            current_state: "failed to compute inverse kinematics.".into()
+                                        });
                                         None
                                     }
                                 }
@@ -886,8 +892,8 @@ async fn publisher_callback(
     mut timer: r2r::Timer,
     joint_state: &Arc<Mutex<JointState>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut clock = r2r::Clock::create(r2r::ClockType::RosTime).unwrap();
     loop {
-        let mut clock = r2r::Clock::create(r2r::ClockType::RosTime).unwrap();
         let now = clock.get_now().unwrap();
         let time_stamp = r2r::Clock::to_builtin_time(&now);
 
