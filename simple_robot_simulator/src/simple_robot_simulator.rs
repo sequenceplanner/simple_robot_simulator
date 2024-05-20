@@ -39,11 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let params_things = params.lock().unwrap(); // OK to panic
         let urdf_raw = params_things.get("urdf_raw");
         let initial_joint_state = params_things.get("initial_joint_state");
-        let prefix = params_things.get("prefix");
+        let _prefix = params_things.get("prefix");
 
         // make a manipulatable kinematic chain using a urdf or through the xacro pipeline
         let (chain, joints, links) = match urdf_raw {
-            Some(p2) => match p2 {
+            Some(p2) => match &p2.value {
                 ParameterValue::String(urdf) => chain_from_urdf_raw(urdf).await,
                 _ => {
                     r2r::log_error!(NODE_ID, "Parameter 'urdf_raw' has to be of type String.");
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         name: joints.clone(),
         position: match initial_joint_state {
-            Some(p) => match p {
+            Some(p) => match &p.value {
                 ParameterValue::StringArray(joints) => joints
                     .iter()
                     .map(|j| j.parse::<f64>().unwrap_or_default())
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // a service to enable or disable remote control
     let remote_control_service =
-        node.create_service::<SetBool::Service>("enable_remote_control")?;
+        node.create_service::<SetBool::Service>("enable_remote_control", QosProfile::default())?;
 
     // // a service to enable or disable teaching mode
     // let teaching_mode_service =
@@ -141,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // a service to trigger the move from current pose to ghost pose
     let match_ghost_service =
-        node.create_service::<Trigger::Service>("match_ghost")?;
+        node.create_service::<Trigger::Service>("match_ghost", QosProfile::default())?;
 
     // listen to direct joint state control when remote control is disabled
     let joint_state_subscriber =
@@ -198,8 +198,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // a client that asks a tf lookup service for transformations between frames in the tf tree
-    let tf_lookup_client = node.create_client::<LookupTransform::Service>("/lookup_transform")?;
-    let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
+    let tf_lookup_client = node.create_client::<LookupTransform::Service>("/lookup_transform", QosProfile::default())?;
+    let waiting_for_tf_lookup_server = r2r::Node::is_available(&tf_lookup_client)?;
 
     // keep the node alive
     let handle = std::thread::spawn(move || loop {
@@ -342,7 +342,7 @@ async fn chain_from_urdf_raw(urdf: &str) -> (Chain<f64>, Vec<String>, Vec<String
 
 // actually make the kinematic chain from the urdf file (supplied or generated)
 async fn make_chain(urdf_path: &str) -> (Chain<f64>, Vec<String>, Vec<String>) {
-    match k::Chain::<f64>::from_urdf_file(urdf_path.clone()) {
+    match k::Chain::<f64>::from_urdf_file(urdf_path) {
         Ok(c) => {
             r2r::log_info!(NODE_ID, "Loading urdf file: '{:?}'.", urdf_path);
             (
