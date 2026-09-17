@@ -1,0 +1,28 @@
+[package]
+name = "simple_robot_simulator"
+version = "0.1.0"
+authors = ["Endre Erős <endree@chalmers.se>"]
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7.0", features = ["full"] }
+futures = "0.3.15"
+# 0.32 rather than 0.27: k 0.27 pulls nalgebra 0.29 while micro_sp is on 0.32, which
+# would make `Isometry3` two incompatible types and break `sp_transform_to_isometry`.
+k = "0.32.0"
+urdf-rs = "0.9.0"
+log = "0.4.22"
+nanoid = "0.4.0"
+ordered-float = { version = "3.4.0", features = ["serde"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.127"
+micro_sp = { git = "ssh://git@github.com/endre90/micro_sp.git", tag = "v0.6.1" }
+
+[[bin]]
+name = "simple_robot_simulator"
+path = "src/main.rs"
+
+[[bin]]
+name = "sim_test_client"
+path = "src/bin/sim_test_client.rs"
