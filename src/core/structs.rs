@@ -48,6 +48,16 @@ pub struct URDFParameters {
     pub robot_model: String,
     pub description_file: String,
     pub meshes_path: String,
+    /// What colour to draw this robot, as RGBA in 0..1, or `None` to let the meshes
+    /// speak for themselves.
+    ///
+    /// A COLLADA mesh usually carries its own materials and those are what should be
+    /// drawn - every UR mesh does. Some do not: the ros-industrial ABB visuals are
+    /// MeshLab exports with `<library_materials/>` empty, so there is nothing to
+    /// bind and the arm comes out in the viewer's default grey no matter what
+    /// `mesh_use_embedded_materials` says. This is the way to say what colour that
+    /// robot actually is.
+    pub mesh_color: Option<[f32; 4]>,
 }
 
 impl URDFParameters {

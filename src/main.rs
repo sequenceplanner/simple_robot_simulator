@@ -72,6 +72,96 @@ fn initial_joint_positions(description: &RobotDescription, log_target: &str) -> 
     }
 }
 
+/// What colour to draw this robot, from `MESH_COLOR`.
+///
+/// `r,g,b` or `r,g,b,a`, each 0..1 - so `1,0.45,0.1` is an ABB's orange. Unset means
+/// no colour: the meshes are drawn with their own materials, which is what a mesh
+/// exported with materials wants. Set it for a robot whose meshes carry none, or the
+/// viewer has nothing to go on and falls back to grey.
+fn mesh_color(log_target: &str) -> Option<[f32; 4]> {
+    let raw = std::env::var("MESH_COLOR").ok()?;
+    let color = parse_mesh_color(&raw, log_target)?;
+    log::info!(target: log_target, "Drawing the meshes in rgba {:?}.", color);
+    Some(color)
+}
+
+/// `MESH_COLOR`'s value as an RGBA, or `None` if it does not describe one.
+pub fn parse_mesh_color(raw: &str, log_target: &str) -> Option<[f32; 4]> {
+    let parts: Result<Vec<f32>, _> = raw.split(',').map(|v| v.trim().parse::<f32>()).collect();
+    let values = match parts {
+        Ok(values) if values.len() == 3 || values.len() == 4 => values,
+        Ok(values) => {
+            log::warn!(
+                target: log_target,
+                "MESH_COLOR needs 3 or 4 comma-separated numbers, got {}; \
+                 drawing the meshes with their own materials instead.",
+                values.len()
+            );
+            return None;
+        }
+        Err(e) => {
+            log::warn!(
+                target: log_target,
+                "MESH_COLOR is not a comma-separated list of numbers ({}); \
+                 drawing the meshes with their own materials instead.",
+                e
+            );
+            return None;
+        }
+    };
+
+    // Alpha defaults to opaque rather than to zero: a colour asked for and then
+    // drawn fully transparent is never what was meant.
+    let color = [
+        values[0],
+        values[1],
+        values[2],
+        values.get(3).copied().unwrap_or(1.0),
+    ];
+    if color.iter().any(|c| !(0.0..=1.0).contains(c)) {
+        log::warn!(
+            target: log_target,
+            "MESH_COLOR components are 0..1, got {:?}; using the meshes' own materials.",
+            color
+        );
+        return None;
+    }
+    Some(color)
+}
+
+#[cfg(test)]
+mod mesh_color_tests {
+    use super::parse_mesh_color;
+
+    #[test]
+    fn three_components_are_opaque() {
+        // Alpha defaults to 1, not 0: a colour asked for and drawn fully
+        // transparent is never what was meant, and 0 is what this used to publish.
+        assert_eq!(
+            parse_mesh_color("0.961,0.486,0.125", "test"),
+            Some([0.961, 0.486, 0.125, 1.0])
+        );
+    }
+
+    #[test]
+    fn four_components_keep_their_alpha() {
+        assert_eq!(
+            parse_mesh_color("1, 0.45, 0.1, 0.5", "test"),
+            Some([1.0, 0.45, 0.1, 0.5])
+        );
+    }
+
+    #[test]
+    fn anything_that_is_not_a_colour_falls_back_to_the_meshes() {
+        // Every one of these means "draw the meshes with their own materials",
+        // which is the safe answer - a robot in the wrong colour is a bug you see,
+        // a robot that fails to start is a cell that does not run.
+        for raw in ["", "1,0", "1,0,0,0,0", "orange", "1,0,green", "2,0,0", "-1,0,0"] {
+            assert_eq!(parse_mesh_color(raw, "test"), None, "{raw:?} is not a colour");
+        }
+    }
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     initialize_env_logger();
 
@@ -103,6 +193,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         robot_model: robot_model.clone(),
         description_file: urdf_path.to_string_lossy().to_string(),
         meshes_path: meshes_path.to_string_lossy().to_string(),
+        mesh_color: mesh_color(&log_target),
     };
 
     // Without a URDF there is no robot to simulate, so this is a real startup

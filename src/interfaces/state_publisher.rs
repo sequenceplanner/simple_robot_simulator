@@ -128,6 +128,11 @@ async fn initialize_visual_transforms(
     robot_params: &URDFParameters,
     con: &mut SPConnection,
 ) {
+    // Opaque, so a configured colour is actually visible. The all-zero default that
+    // used to be published here is a fully transparent black; it was only ever
+    // harmless because the embedded materials took precedence over it.
+    let color = robot_params.mesh_color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+
     let transforms_to_insert: Vec<SPTransformStamped> = description
         .visuals
         .iter()
@@ -150,11 +155,20 @@ async fn initialize_visual_transforms(
                 ("mesh_file".to_spvalue(), visual.mesh_file.to_spvalue()),
                 ("mesh_scale".to_spvalue(), visual.scale.to_spvalue()),
                 ("visualize_mesh".to_spvalue(), true.to_spvalue()),
-                ("mesh_a".to_spvalue(), 0.0.to_spvalue()),
-                ("mesh_r".to_spvalue(), 0.0.to_spvalue()),
-                ("mesh_g".to_spvalue(), 0.0.to_spvalue()),
-                ("mesh_b".to_spvalue(), 0.0.to_spvalue()),
-                ("mesh_use_embedded_materials".to_spvalue(), true.to_spvalue()),
+                // A colour and the mesh's own materials are alternatives, not a
+                // pair: a viewer told to use the embedded materials ignores the
+                // colour, so asking for both is asking for the colour to be
+                // dropped. No colour configured means the meshes know best, which
+                // is the right answer for anything exported with its materials
+                // intact.
+                ("mesh_r".to_spvalue(), (color[0] as f64).to_spvalue()),
+                ("mesh_g".to_spvalue(), (color[1] as f64).to_spvalue()),
+                ("mesh_b".to_spvalue(), (color[2] as f64).to_spvalue()),
+                ("mesh_a".to_spvalue(), (color[3] as f64).to_spvalue()),
+                (
+                    "mesh_use_embedded_materials".to_spvalue(),
+                    robot_params.mesh_color.is_none().to_spvalue(),
+                ),
             ]),
         })
         .collect();
