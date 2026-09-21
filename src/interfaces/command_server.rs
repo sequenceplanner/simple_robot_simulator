@@ -280,13 +280,31 @@ pub async fn command_server(
                     }
                 };
 
+            // The face plate as the URDF calls it, which is not what Redis calls it.
+            //
+            // Every frame id here is prefixed - this robot publishes `r3_tool0` so
+            // that it can stand in a cell beside `r2_tool0` - but the URDF it was
+            // loaded from knows nothing about that and names its links plain
+            // `base_link`..`tool0`. The two lookups below want different halves of
+            // that: `tcp_in_faceplate` above is a *frame* lookup and stays prefixed,
+            // while grafting the tool onto the chain is a *link* lookup and must not
+            // be. Without this an unprefixed cell worked and a prefixed one found no
+            // face plate at all.
+            let prefix: &str = &tf_prefix;
+            let faceplate_link = faceplate_id
+                .strip_prefix(prefix)
+                .unwrap_or(&faceplate_id);
+
             let Some(new_chain) =
-                generate_new_kinematic_chain(&chain, &faceplate_id, &tcp_id, &tcp_in_faceplate)
+                generate_new_kinematic_chain(&chain, faceplate_link, &tcp_id, &tcp_in_faceplate)
             else {
                 fail_request(
                     &mut con,
                     robot_name,
-                    "failed to graft the tcp joint onto the kinematic chain",
+                    &format!(
+                        "failed to graft '{}' onto the kinematic chain at link '{}'",
+                        tcp_id, faceplate_link
+                    ),
                     &log_target,
                 )
                 .await;
@@ -306,7 +324,10 @@ pub async fn command_server(
 
             match calculate_inverse_kinematics(
                 &new_chain,
-                &faceplate_id,
+                // Not `faceplate_id`: the solver finds the grafted joint by
+                // `{face_plate}-{tcp}`, which is the name the graft just built out
+                // of the *link* name.
+                faceplate_link,
                 &tcp_id,
                 &target_in_base,
                 &seed,

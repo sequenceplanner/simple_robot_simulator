@@ -131,6 +131,11 @@ fn pose_to_sp_transform(pose: &urdf_rs::Pose) -> SPTransform {
 /// itself a reasonable TCP to move with. So the face-plate-to-TCP relationship is
 /// looked up from the transform buffer per request and the chain is rebuilt around
 /// it, rather than being baked into the URDF.
+///
+/// `face_plate_id` is a **URDF link name**, not a frame id. On a prefixed robot the
+/// two are not the same string - the frames are published as `r3_tool0` while the
+/// link in the URDF is plain `tool0` - so the caller resolves the frame id to a
+/// link name before calling this. See `command_server`, which owns the prefix.
 pub fn generate_new_kinematic_chain(
     chain: &Chain<f64>,
     face_plate_id: &str,
@@ -162,22 +167,28 @@ pub fn generate_new_kinematic_chain(
     // plate hangs off its last axis by a *fixed* joint - which is every UR, where
     // `tool0` is fixed to `wrist_3_link` - the tool got mounted one link too early
     // and every frame goal missed by that fixed offset.
-    let Some(parent_node) = chain
+    //
+    // There is deliberately no fallback. Falling back to the last joint is the very
+    // mis-mount described above, and it did it silently, behind a warning nobody
+    // reads. A face plate that is not in the URDF is a configuration error, and the
+    // caller turns `None` into a failed request with a message naming the goal.
+    //
+    // The search is also finished - and its iterator dropped - before anything else
+    // touches `chain`. Re-entering it from inside an `or_else` on this same
+    // expression deadlocks: the `chain.iter()` temporary lives to the end of the
+    // statement, so the closure asks for a chain that the iterator still holds, and
+    // the command server hangs on that request instead of failing it.
+    let parent_node = chain
         .iter()
-        .find(|node| node.link().as_ref().map(|l| l.name == face_plate_id) == Some(true))
-        .or_else(|| {
-            log::warn!(
-                target: "simple_robot_simulator",
-                "No link named '{}' in the URDF; mounting the tool on the last joint instead.",
-                face_plate_id
-            );
-            chain.iter_joints().last().and_then(|j| chain.find(&j.name))
-        })
-    else {
+        .find(|node| node.link().as_ref().map(|l| l.name == face_plate_id) == Some(true));
+
+    let Some(parent_node) = parent_node else {
         log::error!(
             target: "simple_robot_simulator",
-            "Failed to find a face plate '{}' to mount the tool on.",
-            face_plate_id
+            "No link named '{}' in the URDF - cannot mount the tool. \
+             The links this robot has are: {:?}.",
+            face_plate_id,
+            chain.iter_links().map(|l| l.name.clone()).collect::<Vec<_>>()
         );
         return None;
     };

@@ -217,3 +217,50 @@ fn inverse_kinematics_fails_for_an_unreachable_pose() {
         "an unreachable pose must fail the request rather than return a bad solution"
     );
 }
+
+/// A face plate the URDF does not have must fail, and fail *quickly*.
+///
+/// This is the prefixed-robot case. A cell with more than one arm publishes its
+/// frames as `r3_tool0` so they can coexist, but the URDF still names its links
+/// plain `tool0`, so a frame id handed straight to the graft matches nothing.
+///
+/// It used to fall back to "mount it on the last joint", which silently put the
+/// tool one fixed joint too early and missed every frame goal by that offset - and
+/// worse, it reached for the chain again from inside an `or_else` on the very
+/// expression whose iterator still held it, and deadlocked there instead of
+/// returning. A hung command server looks like a stuck robot, not a bad config.
+#[test]
+fn a_face_plate_that_is_not_in_the_urdf_fails_instead_of_guessing() {
+    let description = load_description(URDF).unwrap();
+    let tcp_offset = transform(0.0, 0.0, 0.12);
+
+    let grafted =
+        generate_new_kinematic_chain(&description.chain, "r3_tool0", "svt_tcp", &tcp_offset);
+
+    assert!(
+        grafted.is_none(),
+        "a link name that is not in the URDF must be refused, not guessed at"
+    );
+}
+
+/// The prefix is what the caller strips, and stripping it finds the link again.
+///
+/// `command_server` does this for real, from the robot's own SIM_TF_PREFIX; this
+/// pins the relationship the two sides rely on - frame id in, link name out.
+#[test]
+fn stripping_the_frame_prefix_yields_the_urdf_link_name() {
+    let description = load_description(URDF).unwrap();
+    let tcp_offset = transform(0.0, 0.0, 0.12);
+
+    let faceplate_id = "r3_tool0";
+    let link = faceplate_id.strip_prefix("r3_").unwrap_or(faceplate_id);
+    assert_eq!(link, "tool0");
+
+    let grafted = generate_new_kinematic_chain(&description.chain, link, "svt_tcp", &tcp_offset)
+        .expect("the stripped name is the one the URDF actually carries");
+
+    assert!(
+        grafted.find(&format!("{}-svt_tcp", link)).is_some(),
+        "the grafted joint is named after the link the tool hangs off"
+    );
+}
